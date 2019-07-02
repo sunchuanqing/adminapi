@@ -30,6 +30,7 @@ class AuthController extends Controller
         if($admin['status'] == 2) return status(40003, '此账号已被禁用');
         if($admin['admin_status'] == 2) return status(40004, '此账号不许登录员工端');
         if(MD5($request->password) == $admin['password']){
+            unset($admin['password']);
             $admin_role = Admin_role::find($admin['admin_role_id']);// 员工角色shop_id=0 为管理员有所有门店信息
             $admin['role_name'] = $admin_role['role_name'];
             if($admin_role['shop_id'] != 0){// 单个门店信息
