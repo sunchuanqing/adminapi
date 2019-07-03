@@ -79,6 +79,15 @@ function sn_20 (){
     return $sn;
 }
 
+
+// 生成10位会员卡号
+function user_sn (){
+    $sn = substr(date('Ymd', time()), 2, 6).mt_rand(1000, 9999);
+    if(\App\User::where('user_sn', $sn)->count() == 0) return $sn;
+    $this->user_sn();
+}
+
+
  // 用户错误日志
 function user_error_log ($log_info){
     $user_log = new \App\Models\User_error_log();

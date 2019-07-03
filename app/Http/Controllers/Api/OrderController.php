@@ -2,8 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\Coupon_user;
+use App\Models\Flower;
 use App\Models\Order;
 use App\Models\Order_action;
+use App\Models\Order_visit;
+use App\Models\Payment;
+use App\Models\User_account;
+use App\User;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\DB;
@@ -136,12 +142,169 @@ class OrderController extends Controller
         }
     }
 
-
     /**
-     * 开单查询会员接口
+     * 花艺开单接口
      *
+     * 订单类别：1奢饰品护理 2名车护理 3花艺 4优惠券 5优惠服务 6好货  order_type
+     * 配送方式：1自取 2快递 3同城上门 4账户  shipping_type
+     * 根据phone判断是否为平台会员 不是会员默认注册 记录会员来源为此门店
      */
-    public function user (Request $request){
+    public function add_flower_order (Request $request){
         if(empty($request->phone)) return status(40001, 'phone参数有误');
+        // 开单管理员信息
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order_sn = sn_26();
+        if(User::where('phone', $request->phone)->count() == 1){// 断是否为平台会员
+            $user = User::where('phone', $request->phone)->first();
+        }else{
+            // 不是会员默认注册
+            if(empty($request->user_name)) return status(40002, 'user_name参数有误');
+            $user = new User();
+            $user->user_sn = user_sn();
+            $user->user_name = $request->user_name;
+            $user->phone = $request->phone;
+            $user->photo = 'http://img.jiaranjituan.cn/photo.jpg';
+            $user->source_msg = '花艺门店';
+            $user->source_shop_id = $admin['shop_id'];
+            $user->save();
+            $user = User::where('phone', $request->phone)->first();
+        }
+        // 抓取此订单的花束 前端传递花束id 和购买数量number
+        if(empty($request->flower_info)) return status(40003, 'flower_info参数设置有误');
+        $flower_info = json_decode($request->flower_info, true);
+        if(count($flower_info) == 0) return status(40004, '选择花束错误');
+        $data_goods = array();// 订单商品
+        $goods_money = 0;// 商品总价
+        foreach ($flower_info as $k => $v){
+            $flower = Flower::find($v['id']);
+            $goods_money = $goods_money+$flower['price']*$v['number'];
+            array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $flower->flower_sn, 'goods_name' => $flower->flower_name, 'goods_img' => $flower->flower_img, 'goods_number' => $v['number'], 'make_price' => $flower->price, 'attr_name' => '花艺', 'give_integral' => $flower->give_integral, 'rank_integral' => $flower->rank_integral, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+        }
+        // 判断是否使用优惠券
+        $coupon_money = 0;// 优惠券金额
+        if(!empty($request->coupon_sn)){
+            $coupon = Coupon_user::where('coupon_sn', $request->coupon_sn)
+                ->where('user_id', $user['id'])
+                ->whereIn('pay_status', [0, 3])
+                ->where('status', 1)
+                ->where('full_money', '<=' ,$goods_money)
+                ->where('coupon_start_time', '<=', date('Y-m-d', time()))
+                ->where('coupon_end_time', '>=', date('Y-m-d', time()))
+                ->first();
+            if(empty($coupon)) return status(40005, '优惠券不可用');
+            $coupon_money = $coupon->money;// 优惠券金额
+        }
+        DB::beginTransaction();
+        try {
+            // 1.添加订单
+            $order = new Order();
+            $order->shop_id = $admin['shop_id'];
+            $order->order_sn = $order_sn;
+            $order->order_type = 3;
+            $order->user_id = $user['id'];
+            $order->order_status = 7;
+            $order->pay_status = 3;
+            if(empty($request->pay_id)) return status(40006, 'pay_id参数有误');
+            $order->pay_id = $request->pay_id;
+            $order->pay_name = Payment::find($request->pay_id)->pay_name;
+            $order->pay_time = date('Y-m-d H:i:s', time());
+            if(empty($request->shipping_type)) return status(40007, 'shipping_type参数有误');
+            $order->shipping_type = $request->shipping_type;
+            if($request->shipping_type == 1){
+                $order->shipping_status = 8;
+                $order->consignee = $user['user_name'];
+                $order->phone = $user['phone'];
+                $order->shipping_fee = 0;
+                $order->order_amount = $goods_money-$coupon_money;
+            }else{
+                $order->shipping_status = 4;
+                if(empty($request->address_user_name)) return status(40008, 'address_user_name参数有误');
+                $order->consignee = $request->address_user_name;
+                if(empty($request->address_user_phone)) return status(40009, 'address_user_phone参数有误');
+                $order->phone = $request->address_user_phone;
+                $order->country = 86;
+                if(empty($request->province)) return status(40010, 'province参数有误');
+                $order->province = $request->province;
+                if(empty($request->city)) return status(40011, 'city参数有误');
+                $order->city = $request->city;
+                if(empty($request->district)) return status(40012, 'district参数有误');
+                $order->district = $request->district;
+                if(empty($request->address)) return status(40013, 'address参数有误');
+                $order->address = $request->address;
+                $order->shipping_fee = 10;
+                $order->order_amount = $goods_money-$coupon_money+10;
+            }
+            $order->goods_amount = $goods_money;
+            $order->pay_points = 0;
+            $order->pay_points_money = 0;
+            $order->coupon = $coupon_money;
+            if(empty($request->visit_time)) return status(40014, 'visit_time参数有误');
+            $order->best_time = $request->visit_time;
+            $order->admin_id = $admin['id'];
+            if(!empty($request->postscript))
+                $order->postscript = $request->postscript;
+            $order->save();
+            // 2.写入订单商品
+            DB::table('order_goods')->insert($data_goods);
+            // 3.赠送积分 添加积分流水
+            // 4.修改花束库存 和销量
+            foreach ($flower_info as $k => $v){
+                $flower = Flower::find($v['id']);
+                $flower->flower_number = $flower->flower_number-$v['number'];
+                $flower->sales = $flower->sales+$v['number'];
+                $flower->virtual_sales = $flower->virtual_sales+$v['number'];
+                $flower->save();
+            }
+            // 5.写入预约信息
+            $order_visit = new Order_visit();
+            $order_visit->order_sn = $order_sn;
+            $order_visit->visit_time = $request->visit_time;
+            if(!empty($request->bless_name))
+                $order_visit->bless_name = $request->bless_name;
+            if(!empty($request->bless_info))
+                $order_visit->bless_info = $request->bless_info;
+            if(!empty($request->use_type))
+                $order_visit->use_type = $request->use_type;
+            $order_visit->save();
+            // 6.优惠券核销
+            if(!empty($request->coupon_sn)){
+                $coupon_melt = Coupon_user::where('coupon_sn', $request->coupon_sn)->first();
+                $coupon_melt->status = 2;
+                $coupon_melt->coupon_order = $order_sn;
+                $coupon_melt->save();
+            }
+            // 7.判断是否为余额支付 是 扣卡
+            if($request->pay_id == 1){
+                if($user['user_money'] < $order->order_amount) return status(40006, '余额不足');
+                $user->user_money = $user['user_money']-$order->order_amount;
+                $user->save();
+                $user_account = new User_account();
+                $user_account->account_sn = sn_20();
+                $user_account->user_id = $user['id'];
+                $user_account->money_change = -$order->order_amount;
+                $user_account->money = $user->user_money;
+                $user_account->change_name = '订单支付';
+                $user_account->change_desc = '订单编号：'.$order_sn;
+                $user_account->save();
+            }
+            // 8.写入订单操作状态
+            $order_action = new Order_action();
+            $order_action->order_sn = $order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 7;
+            if($request->shipping_type == 1){
+                $order_action->shipping_status = 8;
+            }else{
+                $order_action->shipping_status = 4;
+            }
+            $order_action->pay_status = 3;
+            $order_action->action_note = '员工开单';
+            $order_action->save();
+            DB::commit();
+            return status(200, 'success', ['order_sn' => $order_sn]);
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 }
