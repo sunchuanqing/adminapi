@@ -43,6 +43,7 @@ class OrderController extends Controller
             ->with(['order_goods' => function($query){
                 $query->select('id', 'order_sn', 'goods_name', 'goods_img', 'goods_number');
             }])
+            ->orderBy('id', 'desc')
             ->select(['id', 'order_sn', 'consignee', 'phone', 'best_time', 'created_at', 'postscript']);
         if(!empty($request->where_key)){// 判断是否筛选
             if(empty($request->where_value)) return status(40004, 'where_value参数有误');
@@ -280,11 +281,13 @@ class OrderController extends Controller
                 $user->save();
                 $user_account = new User_account();
                 $user_account->account_sn = sn_20();
+                $user_account->order_sn = $order_sn;
                 $user_account->user_id = $user['id'];
+                $user_account->shop_id = $admin['shop_id'];
                 $user_account->money_change = -$order->order_amount;
                 $user_account->money = $user->user_money;
                 $user_account->change_name = '订单支付';
-                $user_account->change_desc = '订单编号：'.$order_sn;
+                $user_account->change_desc = '门店员工开单，自动扣除会员卡金额。';
                 $user_account->save();
             }
             // 8.写入订单操作状态

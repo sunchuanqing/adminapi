@@ -29,7 +29,18 @@ Route::group(['namespace' => 'Api'], function ($route) {
 
     $route->group(['prefix' => 'user', 'middleware' => 'login'], function ($route) {
         $route->post('user_info', 'UserController@user_info');// 会员信息
-        $route->post('user_address', 'UserController@user_address');// 会员地址信息
+        $route->post('add_user', 'UserController@add_user');// 会员开卡
+        $route->post('user_sn', 'UserController@user_sn');// 会员卡号生成
+        $route->post('user_rank', 'UserController@user_rank');// 会员等级
+        $route->post('add_user_car', 'UserController@add_user_car');// 会员车辆添加
+        $route->post('del_user_car', 'UserController@del_user_car');// 会员车辆删除
+        $route->post('update_user_car', 'UserController@update_user_car');// 会员车辆修改
+        $route->post('user_car', 'UserController@user_car');// 会员车辆列表
+        $route->post('add_user_address', 'UserController@add_user_address');// 会员添加地址
+        $route->post('del_user_address', 'UserController@del_user_address');// 会员删除地址
+        $route->post('update_user_address', 'UserController@update_user_address');// 会员修改地址
+        $route->post('user_address', 'UserController@user_address');// 会员地址列表
         $route->post('user_coupon', 'UserController@user_coupon');// 会员可用优惠券信息
+        $route->post('add_user_money', 'UserController@add_user_money');// 会员充值
     });
 });

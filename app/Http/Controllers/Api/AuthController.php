@@ -24,7 +24,7 @@ class AuthController extends Controller
         if(empty($request->phone)) return status(40001, '手机号有误');
         if(empty($request->password)) return status(40002, '密码有误');
         $admin = Admin::where('phone', $request->phone)
-            ->select(['id', 'name', 'phone', 'email', 'sex', 'photo', 'todolist', 'status', 'admin_status', 'admin_role_id', 'last_time', 'password'])
+            ->select(['id', 'name', 'phone', 'email', 'sex', 'photo', 'todolist', 'status', 'admin_status', 'admin_role_id', 'last_time', 'password', 'token'])
             ->first();
         if(empty($admin)) return status(404, '此账号不存在');
         if($admin['status'] == 2) return status(40003, '此账号已被禁用');
@@ -43,13 +43,14 @@ class AuthController extends Controller
             }
             $last_time = date('Y-m-d H:i:s', time());// 本次登陆时间 也是 最后登录时间
             $key = MD5($last_time.$admin['id']);
-            $last_key = MD5($admin['last_time'].$admin['id']);
+            $last_key = $admin['token'];
             $admin['token'] = $key;
             Redis::set('admin_token_'.$key, $admin);// redis存入新的token
             Redis::del('admin_token_'.$last_key);// 杀死redis以前存储的token
             $update_admin = Admin::find($admin['id']);// 更新最后登录信息
             $update_admin->last_ip = $_SERVER["REMOTE_ADDR"];
             $update_admin->last_time = $last_time;
+            $update_admin->token = $key;
             $update_admin->save();
             return status(200, 'success', $admin);
         }else{
