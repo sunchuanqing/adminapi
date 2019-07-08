@@ -66,6 +66,7 @@ class UserController extends Controller
                 $user_car->car_province = $v['car_province'];
                 $user_car->car_city = $v['car_city'];
                 $user_car->car_number = $v['car_number'];
+                $user_car->plate_number = $v['car_province'].$v['car_city'].$v['car_number'];
                 $user_car->car_info = $v['car_info'];
                 $user_car->car_colour = $v['car_colour'];
                 $user_car->car_type = $v['car_type'];
@@ -329,11 +330,44 @@ class UserController extends Controller
             $user_account->shop_id = $admin['shop_id'];
             $user_account->save();
             // 3.修改会员等级
+            // 4.赠送礼品
             DB::commit();
-            return status(200, 'success');
+            return status(200, '充值成功');
         } catch (QueryException $ex) {
             DB::rollback();
             return status(400, '参数有误');
         }
+    }
+
+
+    /**
+     * 用户流水明细接口
+     *
+     * 状态：1充值 2消费   status
+     * 排序：1倒序 2正序   time
+     */
+    public function user_account (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $user_account = User_account::where('shop_id', $admin['shop_id'])
+            ->join('users', 'user_accounts.user_id', '=', 'users.id')
+            ->select(['user_accounts.account_sn', 'user_accounts.money_change', 'user_accounts.change_desc', 'user_accounts.recharge_sn', 'users.user_name', 'users.phone'])
+            ->with(['recharge_balance' => function($query){
+                $query->join('admins', 'recharge_balances.admin_id', '=', 'admins.id');
+                $query->select('recharge_balances.recharge_sn', 'recharge_balances.admin_id', 'admins.name');
+            }]);
+        if($request->status == 1){
+            $user_account->where('recharge_sn', '!=', null);
+        }else if($request->status == 2){
+            $user_account->where('recharge_sn', '=', null);
+        }
+        if($request->time == 1){
+            $user_account->orderBy('user_accounts.id', 'desc');
+        }else if($request->time == 2){
+            $user_account->orderBy('user_accounts.id', 'asc');
+        }else{
+            $user_account->orderBy('user_accounts.id', 'desc');
+        }
+        if(count($user_account->get()) == 0) return status(404, '没有数据');
+        return status(200, 'success', $user_account->get());
     }
 }

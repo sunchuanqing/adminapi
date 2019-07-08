@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\Redis;
 
 class AuthController extends Controller
 {
+    public function __construct()
+    {
+        $this->middleware('login', ['except' => ['login']]);
+    }
     /**
      * 员工端登录接口
      *
@@ -56,5 +60,16 @@ class AuthController extends Controller
         }else{
             return status(40005, '密码不正确');
         }
+    }
+
+
+    /**
+     * 退出登录接口
+     *
+     */
+    public function login_out (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        Redis::del('admin_token_'.$admin['token']);// 杀死redis以前存储的token
+        return status(200, '退出成功');
     }
 }

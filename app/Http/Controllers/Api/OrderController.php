@@ -123,7 +123,7 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         DB::beginTransaction();
         try {
-            // 1.修改订单状态为制作中
+            // 1.修改订单状态为制作完成
             $order->order_status = 8;
             $order->save();
             // 2.记录操作信息
@@ -142,6 +142,61 @@ class OrderController extends Controller
             return status(400, '参数有误');
         }
     }
+
+
+    /**
+     * 订单送出接口
+     *
+     * 配送状态：1未揽件 2已揽件 3.已接收 4未发货 5后台显示已发货 客户端显示待收货 6已收货 7已退货 8到店自取 9发放账户  shipping_status
+     * 支付状态：1未付款 2付款中 3已付款  pay_status
+     * 配送方式：1自取 2快递 3同城上门 4账户  shipping_type
+     */
+    public function send_order (Request $request){
+        if(empty($request->order_sn)) return status(40001, '订单编号有误');
+        $order = Order::where('order_sn', $request->order_sn)->first();
+        if(empty($order)) return status(404, '找不到此订单');
+        if(($order['order_status'] != 8) || ($order['pay_status'] != 3)) return status(40002, '订单操作有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        DB::beginTransaction();
+        try {
+            // 1.判断订单物流是 到店自取 还是 送货上门
+            if($order['shipping_type'] == 1){
+                // 自取情况 此步骤完结订单
+                $order->order_status = 4;
+                $order->shipping_status = 6;
+                $order->done_time = date('Y-m-d H:i:s', time());
+                $order->save();
+                // 记录操作信息
+                $order_action = new Order_action();
+                $order_action->order_sn = $order['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 4;
+                $order_action->shipping_status = 6;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '商品已交至顾客';
+                $order_action->save();
+            }else{
+                // 上门情况 此步骤发货
+                $order->shipping_status = 5;
+                $order->save();
+                // 记录操作信息
+                $order_action = new Order_action();
+                $order_action->order_sn = $order['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 8;
+                $order_action->shipping_status = 5;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '商品离店，已交至物流人员。';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
 
     /**
      * 花艺开单接口
@@ -309,5 +364,55 @@ class OrderController extends Controller
             DB::rollback();
             return status(400, '参数有误');
         }
+    }
+
+
+    /**
+     * 花束列表接口
+     *
+     * 花艺开单需要选择花束
+     * 花束状态：1正常 2下架   status
+     */
+    public function flower_list (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $flower = Flower::where('shop_id', $admin['shop_id'])
+            ->where('status', 1)
+            ->orderBy('sort', 'desc')
+            ->orderBy('id', 'desc')
+            ->select(['flower_sn', 'flower_name', 'flower_img_thumb', 'flower_number', 'price', 'flower_brief', 'virtual_sales'])
+            ->get();
+        return status(200, 'success', $flower);
+    }
+
+
+    /**
+     * 今日代办接口
+     *
+     * 订单类别：1奢饰品护理 2名车护理 3花艺 4优惠券 5优惠服务 6好货  order_type
+     * 配送方式：1自取 2快递 3同城上门 4账户  shipping_type
+     * 根据phone判断是否为平台会员 不是会员默认注册 记录会员来源为此门店
+     */
+    public function today_order (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order_list = Order::where('shop_id', $admin['shop_id'])
+            ->whereIn('order_status', [7, 8])
+            ->where('pay_status', 3)
+            ->with(['order_goods' => function($query){
+                $query->select('id', 'order_sn', 'goods_name', 'goods_img', 'goods_number');
+            }])
+            ->where('best_time', 'like', '%'.date('Y-m-d', time()).'%')
+            ->orderBy('id', 'desc')
+            ->select(['id', 'order_sn', 'consignee', 'phone', 'best_time', 'created_at', 'postscript']);
+        if(!empty($request->where_key)){// 判断是否筛选
+            if(empty($request->where_value)) return status(40004, 'where_value参数有误');
+            $order_list->where($request->where_key, 'like', '%'.request('where_value').'%');
+        }
+        if(!empty($request->order_by_key)){// 判断是否排序
+            if(empty($request->order_by_value)) return status(40005, 'order_by_value参数有误');
+            $order_list->orderBy($request->order_by_key, $request->order_by_value);
+        }
+        $info = $order_list->get();
+        if(count($info) == 0) return status(404, '找不到数据');
+        return $info;
     }
 }
