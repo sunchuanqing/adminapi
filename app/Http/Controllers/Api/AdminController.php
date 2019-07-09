@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\Admin;
 use App\Models\Admin_role;
 use App\Models\Order;
+use App\Models\Recharge_balance;
 use App\Models\User_account;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
@@ -155,12 +156,43 @@ class AdminController extends Controller
      */
     public function statistics (Request $request){
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        // 订单实收金额 实际支付金额(除去余额支付、优惠、赠送)
         $order_money = Order::where('shop_id', $admin['shop_id'])
             ->where('pay_status', 3)
+            ->where('pay_id', '!=', 1)
             ->sum('order_amount');
-        $recharge_money = User_account::where('shop_id', $admin['shop_id'])
-            ->where('recharge_sn', '!=', null)
-            ->sum('money_change');
-        return $recharge_money;
+        // 充值实收金额 顾客充值实际支付金额(除去赠送)
+        $recharge_receipts_money = Recharge_balance::where('shop_id', $admin['shop_id'])
+            ->where('pay_type', '!=', 6)
+            ->where('status', 2)
+            ->where('pay_status', 2)
+            ->sum('money');
+        // 营业额 订单的实收金额+余额支付的订单金额
+        $turnover = Order::where('shop_id', $admin['shop_id'])
+            ->where('pay_status', 3)
+            ->sum('order_amount');
+        // 充值金额 顾客获取的所有金额(包含赠送)
+        $recharge_money = Recharge_balance::where('shop_id', $admin['shop_id'])
+            ->where('status', 2)
+            ->where('pay_status', 2)
+            ->sum('money');
+        // 开单数量 已经付款的订单数量
+        $order_number = Order::where('shop_id', $admin['shop_id'])
+            ->where('pay_status', 3)
+            ->count();
+        // 充值比数
+        $recharge_number = Recharge_balance::where('shop_id', $admin['shop_id'])
+            ->where('status', 2)
+            ->where('pay_status', 2)
+            ->count();
+        $data = [
+            'order_money' => $order_money,
+            'recharge_receipts_money' => $recharge_receipts_money,
+            'turnover' => $turnover,
+            'recharge_money' => $recharge_money,
+            'order_number' => $order_number,
+            'recharge_number' => $recharge_number
+        ];
+        return status(200, 'success', $data);
     }
 }
