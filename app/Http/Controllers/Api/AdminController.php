@@ -152,7 +152,6 @@ class AdminController extends Controller
     /**
      * 统计接口
      *
-     * 订单实收金额 + 充值实收金额 = 现金流
      */
     public function statistics (Request $request){
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);

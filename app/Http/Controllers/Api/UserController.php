@@ -185,12 +185,29 @@ class UserController extends Controller
      *
      */
     public function user_car (Request $request){
-        if(empty($request->user_id)) return status(40001, 'user_id参数有误');
-        $user_car = User_car::where('user_id', $request->user_id)
-            ->select(['id', 'car_province', 'car_city', 'car_number', 'plate_number', 'car_info', 'car_colour', 'car_type', 'remark'])
-            ->get();
-        if(count($user_car) == 0) return status(404, '车辆不存在');
-        return status(200, 'success', $user_car);
+        if(!empty($request->user_id)){
+            $user_car = User_car::where('user_id', $request->user_id)
+                ->select(['id', 'car_province', 'car_city', 'car_number', 'plate_number', 'car_info', 'car_colour', 'car_type', 'remark'])
+                ->get();
+            if(count($user_car) == 0) return status(404, '车辆不存在');
+            return status(200, 'success', $user_car);
+        }else if(!empty($request->phone)){
+            $user_car = User::where('phone', $request->phone)
+                ->join('user_cars', 'users.id', '=', 'user_cars.user_id')
+                ->select(['user_cars.id', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.plate_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.car_type', 'user_cars.remark', 'users.user_name', 'users.phone'])
+                ->get();
+            if(count($user_car) == 0) return status(404, '车辆不存在');
+            return status(200, 'success', $user_car);
+        }else if(!empty($request->plate_number)){
+            $user_car = User_car::where('plate_number', $request->plate_number)
+                ->join('users', 'user_cars.user_id', '=', 'users.id')
+                ->select(['user_cars.id', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.plate_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.car_type', 'user_cars.remark', 'users.user_name', 'users.phone'])
+                ->get();
+            if(count($user_car) == 0) return status(404, '车辆不存在');
+            return status(200, 'success', $user_car);
+        }else{
+            return status(40001, '参数有误');
+        }
     }
 
 
@@ -317,6 +334,7 @@ class UserController extends Controller
             $recharge_balance->pay_status = 2;
             $recharge_balance->pay_type = $request->pay_type;
             $recharge_balance->admin_id = $admin['id'];
+            $recharge_balance->shop_id = $admin['shop_id'];
             $recharge_balance->save();
             // 2.记录流水
             $user_account = new User_account();
@@ -327,7 +345,6 @@ class UserController extends Controller
             $user_account->money = $user['user_money'];
             $user_account->change_name = '余额充值';
             $user_account->change_desc = $request->change_desc;
-            $user_account->shop_id = $admin['shop_id'];
             $user_account->save();
             // 3.修改会员等级
             // 4.赠送礼品

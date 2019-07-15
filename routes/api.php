@@ -29,6 +29,9 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('add_flower_order', 'OrderController@add_flower_order');// 花艺开单
         $route->post('flower_list', 'OrderController@flower_list');// 花束列表
         $route->post('today_order', 'OrderController@today_order');// 今日代办
+        $route->post('add_car_order', 'OrderController@add_car_order');// 车护开单
+        $route->post('price_list_type', 'OrderController@price_list_type');// 价目表分类
+        $route->post('price_list', 'OrderController@price_list');// 查询价目表
     });
 
     // 用户

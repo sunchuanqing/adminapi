@@ -8,7 +8,10 @@ use App\Models\Order;
 use App\Models\Order_action;
 use App\Models\Order_visit;
 use App\Models\Payment;
+use App\Models\Price_list;
+use App\Models\Price_type;
 use App\Models\User_account;
+use App\Models\User_car;
 use App\User;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
@@ -379,7 +382,7 @@ class OrderController extends Controller
             ->where('status', 1)
             ->orderBy('sort', 'desc')
             ->orderBy('id', 'desc')
-            ->select(['flower_sn', 'flower_name', 'flower_img_thumb', 'flower_number', 'price', 'flower_brief', 'virtual_sales'])
+            ->select(['id', 'flower_sn', 'flower_name', 'flower_img_thumb', 'flower_number', 'price', 'flower_brief', 'virtual_sales'])
             ->get();
         return status(200, 'success', $flower);
     }
@@ -396,13 +399,14 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order_list = Order::where('shop_id', $admin['shop_id'])
             ->whereIn('order_status', [7, 8])
+            ->whereIn('shipping_status', [8, 4])
             ->where('pay_status', 3)
             ->with(['order_goods' => function($query){
                 $query->select('id', 'order_sn', 'goods_name', 'goods_img', 'goods_number');
             }])
             ->where('best_time', 'like', '%'.date('Y-m-d', time()).'%')
             ->orderBy('id', 'desc')
-            ->select(['id', 'order_sn', 'consignee', 'phone', 'best_time', 'created_at', 'postscript']);
+            ->select(['id', 'order_sn', 'consignee', 'phone', 'best_time', 'created_at', 'postscript', 'order_status']);
         if(!empty($request->where_key)){// 判断是否筛选
             if(empty($request->where_value)) return status(40004, 'where_value参数有误');
             $order_list->where($request->where_key, 'like', '%'.request('where_value').'%');
@@ -413,6 +417,145 @@ class OrderController extends Controller
         }
         $info = $order_list->get();
         if(count($info) == 0) return status(404, '找不到数据');
-        return $info;
+        return status(200, 'success', $info);
+    }
+
+
+
+    /**
+     * 车护开单接口
+     *
+     * 订单类别：1奢饰品护理 2名车护理 3花艺 4优惠券 5优惠服务 6好货  order_type
+     * 配送方式：1自取 2快递 3同城上门 4账户  shipping_type
+     * 根据phone判断是否为平台会员 不是会员默认注册 记录会员来源为此门店
+     */
+    public function add_car_order (Request $request){
+        if(empty($request->phone)) return status(40001, 'phone参数有误');
+        // 开单管理员信息
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order_sn = sn_26();
+        if(User::where('phone', $request->phone)->count() == 1){// 断是否为平台会员
+            $user = User::where('phone', $request->phone)->first();
+        }else{
+            // 不是会员默认注册
+            if(empty($request->user_name)) return status(40002, 'user_name参数有误');
+            $user = new User();
+            $user->user_sn = user_sn();
+            $user->user_name = $request->user_name;
+            $user->phone = $request->phone;
+            $user->photo = 'http://img.jiaranjituan.cn/photo.jpg';
+            $user->source_msg = '车护门店';
+            $user->source_shop_id = $admin['shop_id'];
+            $user->save();
+            $user = User::where('phone', $request->phone)->first();
+        }
+        // 判断此车是否绑定会员
+        if(empty($request->car_province)) return status(40002, 'car_province参数有误');
+        if(empty($request->car_city)) return status(40003, 'car_city参数有误');
+        if(empty($request->car_number)) return status(40004, 'car_number参数有误');
+        if(User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->count() == 0){
+            $user_car = new User_car();
+            $user_car->user_id = $user->id;
+            $user_car->car_province = $request->car_province;
+            $user_car->car_city = $request->car_city;
+            $user_car->car_number = $request->car_number;
+            $user_car->plate_number = $request->car_province.$request->car_city.$request->car_number;
+            $user_car->car_info = $request->car_info;
+            $user_car->car_colour = $request->car_colour;
+            $user_car->car_type = $request->car_type;
+            $user_car->remark = $request->remark;
+            $user_car->save();
+        }
+        // 获取此订单选择的服务项目
+        if(empty($request->car_info)) return status(40005, 'car_info参数有误');
+        $car_info = json_decode($request->car_info, true);
+        if(count($car_info) == 0) return status(40006, '选择项目错误');
+        $data_goods = array();// 订单商品
+        $goods_money = 0;// 商品总价
+        foreach ($car_info as $k => $v){
+            $price_list = Price_list::find($v['id']);
+            $goods_money = $goods_money+$price_list['price'];
+            if($price_list['price_list_type_id'] == 0){
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => 1, 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => null, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+            }else{
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => 1, 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => 4, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+            }
+        }
+        DB::beginTransaction();
+        try {
+            // 1.添加订单
+            $order = new Order();
+            $order->shop_id = $admin['shop_id'];
+            $order->order_sn = $order_sn;
+            $order->order_type = 2;
+            $order->user_id = $user['id'];
+            $order->order_status = 2;
+            $order->pay_status = 1;
+            $order->shipping_type = 1;
+            $order->shipping_status = 8;
+            $order->consignee = $user['user_name'];
+            $order->phone = $user['phone'];
+            $order->shipping_fee = 0;
+            // 判断是否使用优惠服务
+            $order->order_amount = $goods_money;
+            $order->goods_amount = $goods_money;
+            $order->pay_points = 0;
+            $order->pay_points_money = 0;
+            $order->coupon = 0;
+            $order->admin_id = $admin['id'];
+            $order->save();
+            // 2.写入订单商品
+            DB::table('order_goods')->insert($data_goods);
+            // 3.赠送积分 添加积分流水
+            // 8.写入订单操作状态
+            $order_action = new Order_action();
+            $order_action->order_sn = $order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 2;
+            $order_action->shipping_status = 8;
+            $order_action->pay_status = 1;
+            $order_action->action_note = '员工开单';
+            $order_action->save();
+            DB::commit();
+            return status(200, 'success', ['order_sn' => $order_sn]);
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 价目表分类接口
+     *
+     */
+    public function price_list_type (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $price_type = Price_type::where('shop_id', $admin['shop_id'])->select(['id', 'name']);
+        if(empty($request->parent_id)){
+            $price_type->where('parent_id', null);
+        }else{
+            $price_type->where('parent_id', $request->parent_id);
+        }
+        $info = $price_type->get();
+
+        return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 价目表接口
+     *
+     */
+    public function price_list (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $price_list = Price_list::where('price_list_type_id', '>', 0)
+            ->where('shop_id', $admin['shop_id'])
+            ->select(['id', 'price_list_name', 'price', 'sell_money', 'job_money']);
+        if(!empty($request->type)){
+            $price_list->where('price_list_type_id', $request->type);
+        }
+        $info = $price_list->get();
+        return status(200, 'success', $info);
     }
 }

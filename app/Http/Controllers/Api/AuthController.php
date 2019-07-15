@@ -72,4 +72,18 @@ class AuthController extends Controller
         Redis::del('admin_token_'.$admin['token']);// 杀死redis以前存储的token
         return status(200, '退出成功');
     }
+
+
+    /**
+     * 更新App接口
+     *
+     */
+//    public function update_app (Request $request){
+//        $i = '1.0.1';
+//        if($request->version_number == $i){
+//            return false;
+//        }else{
+//            re
+//        }
+//    }
 }
