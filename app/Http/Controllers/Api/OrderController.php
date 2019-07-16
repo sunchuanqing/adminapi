@@ -6,10 +6,12 @@ use App\Models\Coupon_user;
 use App\Models\Flower;
 use App\Models\Order;
 use App\Models\Order_action;
+use App\Models\Order_good;
 use App\Models\Order_visit;
 use App\Models\Payment;
 use App\Models\Price_list;
 use App\Models\Price_type;
+use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_car;
 use App\User;
@@ -466,6 +468,7 @@ class OrderController extends Controller
             $user_car->remark = $request->remark;
             $user_car->save();
         }
+        $user_car_info = User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->first();
         // 获取此订单选择的服务项目
         if(empty($request->car_info)) return status(40005, 'car_info参数有误');
         $car_info = json_decode($request->car_info, true);
@@ -497,12 +500,28 @@ class OrderController extends Controller
             $order->phone = $user['phone'];
             $order->shipping_fee = 0;
             // 判断是否使用优惠服务
-            $order->order_amount = $goods_money;
+            if(!empty($request->server_sn)){
+                $server = Shop_serve_user::where('user_id', $user['id'])
+                    ->where('status', 1)
+                    ->where('pay_status', 3)
+                    ->where('user_serve_sn', $request->server_sn)
+                    ->first();
+                if(empty($server)) return status(40007, '优惠套餐不可用');
+                $server->status = 2;
+                $server->save();
+                $order_amount = $goods_money-$server['market_price'];
+                $order->server_user_sn = $request->server_sn;
+                $order->server = $server['market_price'];
+            }else{
+                $order_amount = $goods_money;
+            }
+            $order->order_amount = $order_amount;
             $order->goods_amount = $goods_money;
             $order->pay_points = 0;
             $order->pay_points_money = 0;
             $order->coupon = 0;
             $order->admin_id = $admin['id'];
+            $order->user_car_id = $user_car_info->id;
             $order->save();
             // 2.写入订单商品
             DB::table('order_goods')->insert($data_goods);
@@ -531,15 +550,25 @@ class OrderController extends Controller
      */
     public function price_list_type (Request $request){
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        $price_type = Price_type::where('shop_id', $admin['shop_id'])->select(['id', 'name']);
-        if(empty($request->parent_id)){
-            $price_type->where('parent_id', null);
-        }else{
-            $price_type->where('parent_id', $request->parent_id);
-        }
-        $info = $price_type->get();
+        $price_type = Price_type::where('shop_id', $admin['shop_id'])->select(['id', 'name'])->where('parent_id', null)->get();
+        $ss = $this->select_children($price_type);
+        return status(200, 'success', $ss);
+    }
 
-        return status(200, 'success', $info);
+
+    /**
+     * 获取子类价目表分类发布方法
+     *
+     */
+    private function select_children($parent){
+        foreach ($parent as $k => $v){
+            $children = Price_type::where('parent_id', $v['id'])->select(['id', 'name'])->get();
+            $parent[$k]['children'] = $children;
+            if(count($children) > 0){
+                $this->select_children($children);
+            }
+        }
+        return $parent;
     }
 
 
@@ -557,5 +586,103 @@ class OrderController extends Controller
         }
         $info = $price_list->get();
         return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 服务项目列表接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function server_list (Request $request){
+        if(empty($request->status)) return status(40001, 'status参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
+            ->select(['order_goods.id', 'orders.order_sn', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'order_goods.goods_name'])
+            ->where('orders.shop_id', '=', $admin['shop_id'])
+            ->where('order_goods.status', '=', $request->status);
+        if(!empty($request->time)){
+            $order->where('orders.created_at', 'like', '%'.$request->time.'%');
+        }
+        if(!empty($request->order_sn)){
+            $order->where('orders.order_sn', 'like', '%'.$request->order_sn.'%');
+        }
+        $data = $order->get();
+        if(count($data) == 0) return status(404, '没有数据');
+        return status(200, 'success', $data);
+    }
+
+
+    /**
+     * 服务项目去施工接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function to_work (Request $request){
+        if(empty($request->id)) return status(40001, 'id参数有误');
+        if(empty($request->work_id)) return status(40002, 'work_id参数有误');
+        $order = Order_good::find($request->id);
+        if($order->status != 4) return status(40003, '操作有误');
+        $order->status = 5;
+        $order->work_id = $request->work_id;
+        $order->save();
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 服务项目完工接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     * 订单状态：1已预约 2洗护中 3洗护完工 4已完成 5已取消 6已下单 7制作中 8制作完成   order_status
+     * 当所有项目都完成时  订单状态改变为 3洗护完成
+     */
+    public function work_ok (Request $request){
+        if(empty($request->id)) return status(40001, 'id参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order = Order_good::find($request->id);
+        if($order->status != 5) return status(40002, '操作有误');
+        $order->status = 6;
+        $order->save();
+        if(Order_good::where('order_sn', $order->order_sn)->where('status', '!=', 6)->count() == 0){
+            $order = Order::where('order_sn', $order->order_sn)->first();
+            $order->order_status = 3;
+            $order->save();
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 3;
+            $order_action->shipping_status = 8;
+            $order_action->pay_status = 1;
+            $order_action->action_note = '员工施工完成';
+            $order_action->save();
+        }
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 车护订单列表接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function car_order_list (Request $request){
+//        if(empty($request->status)) return status(40001, 'status参数有误');
+//        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+//        $order = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+//            ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
+//            ->select(['order_goods.id', 'orders.order_sn', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'order_goods.goods_name'])
+//            ->where('orders.shop_id', '=', $admin['shop_id'])
+//            ->where('order_goods.status', '=', $request->status);
+//        if(!empty($request->time)){
+//            $order->where('orders.created_at', 'like', '%'.$request->time.'%');
+//        }
+//        if(!empty($request->order_sn)){
+//            $order->where('orders.order_sn', 'like', '%'.$request->order_sn.'%');
+//        }
+//        $data = $order->get();
+//        if(count($data) == 0) return status(404, '没有数据');
+//        return status(200, 'success', $data);
     }
 }

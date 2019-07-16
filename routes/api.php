@@ -32,6 +32,9 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('add_car_order', 'OrderController@add_car_order');// 车护开单
         $route->post('price_list_type', 'OrderController@price_list_type');// 价目表分类
         $route->post('price_list', 'OrderController@price_list');// 查询价目表
+        $route->post('server_list', 'OrderController@server_list');// 服务项目列表
+        $route->post('to_work', 'OrderController@to_work');// 去施工
+        $route->post('work_ok', 'OrderController@work_ok');// 施工完成接口
     });
 
     // 用户
@@ -44,6 +47,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('del_user_car', 'UserController@del_user_car');// 会员车辆删除
         $route->post('update_user_car', 'UserController@update_user_car');// 会员车辆修改
         $route->post('user_car', 'UserController@user_car');// 会员车辆列表
+        $route->post('update_car_binding', 'UserController@update_car_binding');// 会员车辆更换绑定账号
         $route->post('add_user_address', 'UserController@add_user_address');// 会员添加地址
         $route->post('del_user_address', 'UserController@del_user_address');// 会员删除地址
         $route->post('update_user_address', 'UserController@update_user_address');// 会员修改地址

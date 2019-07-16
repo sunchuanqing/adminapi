@@ -212,6 +212,25 @@ class UserController extends Controller
 
 
     /**
+     * 会员车辆更换绑定账号接口
+     *
+     */
+    public function update_car_binding (Request $request){
+        if(empty($request->user_id)) return status(40001, 'user_id不正确');
+        if(empty($request->car_province)) return status(40002, 'car_province参数有误');
+        if(empty($request->car_city)) return status(40003, 'car_city参数有误');
+        if(empty($request->car_number)) return status(40004, 'car_number参数有误');
+        $user = User::find($request->user_id);
+        if(empty($user)) return status(40005, '用户信息不正确');
+        $user_car = User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->first();
+        if(empty($user_car)) return status(40006, '车辆信息不正确');
+        $user_car->user_id = $request->user_id;
+        $user_car->save();
+        return status(200, '绑定成功');
+    }
+
+
+    /**
      * 会员添加地址接口
      *
      */
