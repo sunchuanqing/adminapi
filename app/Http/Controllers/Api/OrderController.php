@@ -10,7 +10,9 @@ use App\Models\Order_good;
 use App\Models\Order_visit;
 use App\Models\Payment;
 use App\Models\Price_list;
+use App\Models\Price_list_user;
 use App\Models\Price_type;
+use App\Models\Shop_serve;
 use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_car;
@@ -245,12 +247,7 @@ class OrderController extends Controller
         $coupon_money = 0;// 优惠券金额
         if(!empty($request->coupon_sn)){
             $coupon = Coupon_user::where('coupon_sn', $request->coupon_sn)
-                ->where('user_id', $user['id'])
-                ->whereIn('pay_status', [0, 3])
-                ->where('status', 1)
                 ->where('full_money', '<=' ,$goods_money)
-                ->where('coupon_start_time', '<=', date('Y-m-d', time()))
-                ->where('coupon_end_time', '>=', date('Y-m-d', time()))
                 ->first();
             if(empty($coupon)) return status(40005, '优惠券不可用');
             $coupon_money = $coupon->money;// 优惠券金额
@@ -477,11 +474,11 @@ class OrderController extends Controller
         $goods_money = 0;// 商品总价
         foreach ($car_info as $k => $v){
             $price_list = Price_list::find($v['id']);
-            $goods_money = $goods_money+$price_list['price'];
+            $goods_money = $goods_money+$price_list['price']*$v['number'];
             if($price_list['price_list_type_id'] == 0){
-                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => 1, 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => null, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => $v['number'], 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => null, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
             }else{
-                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => 1, 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => 4, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $price_list->price_sn, 'goods_name' => $price_list->price_list_name, 'goods_number' => $v['number'], 'make_price' => $price_list->price, 'attr_name' => '名车护理', 'status' => 4, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
             }
         }
         DB::beginTransaction();
@@ -500,20 +497,43 @@ class OrderController extends Controller
             $order->phone = $user['phone'];
             $order->shipping_fee = 0;
             // 判断是否使用优惠服务
-            if(!empty($request->server_sn)){
+            if(!empty($request->user_server_sn)){
                 $server = Shop_serve_user::where('user_id', $user['id'])
                     ->where('status', 1)
                     ->where('pay_status', 3)
-                    ->where('user_serve_sn', $request->server_sn)
+                    ->where('user_serve_sn', $request->user_server_sn)
                     ->first();
-                if(empty($server)) return status(40007, '优惠套餐不可用');
-                $server->status = 2;
-                $server->save();
-                $order_amount = $goods_money-$server['market_price'];
-                $order->server_user_sn = $request->server_sn;
-                $order->server = $server['market_price'];
+                if(!empty($server)){
+                    $server->status = 2;
+                    $server->save();
+                    $order_amount = $goods_money-$server['market_price'];
+                    $order->server_user_sn = $request->user_server_sn;
+                    $order->server = $server['market_price'];
+                    $order->serve_id = $server->shop_serve_id;
+                    $order->serve_user_id = $server->id;
+                }else{
+                    $price_list_user = Price_list_user::where('user_id', $user['id'])
+                        ->where('status', 1)
+                        ->where('pay_status', 3)
+                        ->where('price_list_sn', $request->user_server_sn)
+                        ->first();
+                    if(empty($price_list_user)) return status(40007, '优惠服务不可用');
+                    $price_list_user->status = 2;
+                    $price_list_user->save();
+                    $order_amount = $goods_money-$price_list_user['price_list_money'];
+                    $order->server_user_sn = $request->user_server_sn;
+                    $order->server = $price_list_user['price_list_money'];
+                    $order->price_list_user_id = $price_list_user->id;
+                }
             }else{
-                $order_amount = $goods_money;
+                if(!empty($request->serve_id)){
+                    $server = Shop_serve::find($request->serve_id);
+                    $order_amount = $goods_money-($server['market_price']-$server['shop_price']);
+                    $order->server = $server['market_price']-$server['shop_price'];
+                    $order->serve_id = $request->serve_id;
+                }else{
+                    $order_amount = $goods_money;
+                }
             }
             $order->order_amount = $order_amount;
             $order->goods_amount = $goods_money;
@@ -537,6 +557,73 @@ class OrderController extends Controller
             $order_action->save();
             DB::commit();
             return status(200, 'success', ['order_sn' => $order_sn]);
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 车护订单项目修改接口
+     *
+     */
+    public function update_order_serve (Request $request){
+        if(empty($request->order_sn)) return status(40001, 'order_sn参数有误');
+        if(empty($request->goods_info)) return status(40002, 'goods_info参数有误');
+        DB::beginTransaction();
+        try {
+            $goods_info = json_decode($request->goods_info, true);
+            $order = Order::where('order_sn', $request->order_sn)->first();
+            $change_money = 0;// 记录订单变动的价格
+            foreach ($goods_info as $k => $v){
+                $price_list = Price_list::where('price_sn', $v['goods_sn'])->first();
+                if(empty($price_list)) return status(40003, '价目表不存在');
+                if($v['id'] == 0){// 0代表添加商品
+                    if($v['number'] <= 0) return status(40004, '商品数量不正确');
+                    $order_goods = new Order_good();
+                    $order_goods->order_sn = $request->order_sn;
+                    $order_goods->goods_sn = $v['goods_sn'];
+                    $order_goods->goods_name = $price_list->price_list_name;
+                    $order_goods->goods_number = $v['number'];
+                    $order_goods->make_price = $price_list->price;
+                    $order_goods->attr_name = '名车护理';
+                    if($price_list['price_list_type_id'] == 0){
+                        $order_goods->status = null;
+                    }else{
+                        $order_goods->status = 4;
+                    }
+                    $order_goods->save();
+                    $change_money = $change_money+$price_list->price*$v['number'];
+                }else{// 修改
+                    $order_goods = Order_good::find($v['id']);
+                    if(empty($order_goods)) return status(40005, '订单商品id不正确');
+                    if($order_goods['goods_number'] < $v['number']){// 数量增加
+                        if($order_goods['status'] != null) return status(40008, '商品不可修改');
+                        $change_money = $change_money+$price_list->price*($v['number']-$order_goods['goods_number']);
+                        $order_goods->goods_number = $v['number'];
+                        $order_goods->save();
+                    }else if($order_goods['goods_number'] > $v['number']){// 数量减少
+                        if($v['number'] > 0){
+                            if($order_goods['status'] != null) return status(40007, '商品不可修改');
+                            $change_money = $change_money+$price_list->price*($v['number']-$order_goods['goods_number']);
+                            $order_goods->goods_number = $v['number'];
+                            $order_goods->save();
+                        }else{// 删除
+                            if($order_goods['status'] != null) return status(40006, '商品不可删除');
+                            $change_money = $change_money-$price_list->price*$order_goods['goods_number'];
+                            $order_goods->delete();
+                        }
+                    }else{
+                        return status(40009, '商品数量有误');
+                    }
+                }
+            }
+            $order->goods_amount = $order->goods_amount+$change_money;
+            $order->order_amount = $order->order_amount+$change_money;
+            $order->save();
+            DB::commit();
+            return status(200, '修改成功');
         } catch (QueryException $ex) {
             DB::rollback();
             return status(400, '参数有误');
@@ -581,11 +668,45 @@ class OrderController extends Controller
         $price_list = Price_list::where('price_list_type_id', '>', 0)
             ->where('shop_id', $admin['shop_id'])
             ->select(['id', 'price_list_name', 'price', 'sell_money', 'job_money']);
+        if(!empty($request->name)){
+            $price_list->where('price_list_name', 'like', '%'.$request->name.'%');
+        }
         if(!empty($request->type)){
             $price_list->where('price_list_type_id', $request->type);
         }
         $info = $price_list->get();
         return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 优惠套餐列表接口
+     *
+     */
+    public function set_meal_list (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $serve = Shop_serve::where('shop_id', $admin['shop_id'])
+            ->where('is_on_sale', 1)
+            ->select(['id', 'serve_sn', 'serve_name', 'shop_price', 'serve_item']);
+        if(!empty($request->name)){
+            $serve->where('serve_name', 'like', '%'.$request->name.'%');
+        }
+        $info = $serve->get();
+        return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 车护商品列表接口
+     *
+     */
+    public function car_goods (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $car_goods = Price_list::where('shop_id', $admin['shop_id'])
+            ->where('price_list_type_id', 0)
+            ->select(['id', 'price_list_name', 'price', 'sell_money', 'job_money'])
+            ->get();
+        return status(200, 'success', $car_goods);
     }
 
 
@@ -603,7 +724,7 @@ class OrderController extends Controller
             ->where('orders.shop_id', '=', $admin['shop_id'])
             ->where('order_goods.status', '=', $request->status);
         if(!empty($request->time)){
-            $order->where('orders.created_at', 'like', '%'.$request->time.'%');
+            $order->whereDate('orders.created_at', $request->time);
         }
         if(!empty($request->order_sn)){
             $order->where('orders.order_sn', 'like', '%'.$request->order_sn.'%');
@@ -631,6 +752,7 @@ class OrderController extends Controller
     }
 
 
+
     /**
      * 服务项目完工接口
      *
@@ -643,6 +765,9 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order = Order_good::find($request->id);
         if($order->status != 5) return status(40002, '操作有误');
+        if($order->work_id != $request->work_id){
+            $order->work_id = $request->work_id;
+        }
         $order->status = 6;
         $order->save();
         if(Order_good::where('order_sn', $order->order_sn)->where('status', '!=', 6)->count() == 0){
@@ -668,21 +793,293 @@ class OrderController extends Controller
      * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
      */
     public function car_order_list (Request $request){
-//        if(empty($request->status)) return status(40001, 'status参数有误');
-//        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-//        $order = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
-//            ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
-//            ->select(['order_goods.id', 'orders.order_sn', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'order_goods.goods_name'])
-//            ->where('orders.shop_id', '=', $admin['shop_id'])
-//            ->where('order_goods.status', '=', $request->status);
-//        if(!empty($request->time)){
-//            $order->where('orders.created_at', 'like', '%'.$request->time.'%');
-//        }
-//        if(!empty($request->order_sn)){
-//            $order->where('orders.order_sn', 'like', '%'.$request->order_sn.'%');
-//        }
-//        $data = $order->get();
-//        if(count($data) == 0) return status(404, '没有数据');
-//        return status(200, 'success', $data);
+        if(empty($request->order_status)) return status(40001, 'order_status参数有误');
+        $order_status = json_decode($request->order_status, true);
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order = Order::where('shop_id', $admin['shop_id'])
+            ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
+            ->select(['orders.id', 'orders.order_sn', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info'])
+            ->whereIn('orders.order_status', $order_status)
+            ->with(['order_goods' => function($query){
+                $query->select('order_sn', 'goods_name', 'goods_number', 'status');
+            }]);
+        if(!empty($request->time)){
+            $order->whereDate('orders.created_at', $request->time);
+        }
+        if(!empty($request->order_sn)){
+            $order->where('orders.order_sn', 'like', '%'.$request->order_sn.'%');
+        }
+        $data = $order->get();
+        if(count($data) == 0) return status(404, '没有数据');
+        return status(200, 'success', $data);
+    }
+
+
+    /**
+     * 车护订单详情接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function car_order_info (Request $request){
+        if(empty($request->order_id)) return status(40001, 'order_id参数有误');
+        $order_info = Order::with(['order_goods' => function($query){
+                $query->select('id', 'order_sn', 'goods_sn', 'goods_name', 'goods_number', 'make_price', 'status', 'to_buyer');
+            }])
+            ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
+            ->join('users', 'orders.user_id', '=', 'users.id')
+            ->join('user_ranks', 'users.rank_id', '=', 'user_ranks.id')
+            ->select(['orders.id', 'orders.order_sn', 'orders.goods_amount', 'orders.coupon', 'orders.server', 'orders.order_amount', 'orders.created_at', 'orders.done_time', 'orders.pay_time', 'orders.pay_id', 'orders.pay_name', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.remark', 'users.user_sn', 'users.user_name', 'users.sex', 'users.phone', 'users.user_money', 'user_ranks.name'])
+            ->find($request->order_id);
+        if(empty($order_info)) return status(404, '找不到数据');
+        return status(200, 'success', $order_info);
+    }
+
+
+    /**
+     * 车护订单入账接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function tally_order (Request $request){
+        if(empty($request->id)) return status(40001, 'id参数有误');
+        if(empty($request->pay_id)) return status(40002, 'pay_id参数有误');
+        DB::beginTransaction();
+        try {
+            $pay = Payment::find($request->pay_id);
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            $order = Order::find($request->id);
+            if($order->order_status != 3) return status(40003, '订单操作有误');
+            $order->order_status = 4;
+            $order->shipping_status = 6;
+            $order->pay_status = 3;
+            $order->pay_id = $request->pay_id;
+            $order->pay_name = $pay->pay_name;
+            if(!empty($request->coupon_id)){
+                if($order->serve_id == null){
+                    $order_goods_coupon = $order['order_amount'];
+                }else{
+                    $order_goods_coupon = $order['goods_amount'] - Shop_serve::find($order['serve_id'])->shop_price;
+                }
+                $coupon = Coupon_user::where('full_money', '<=' ,$order_goods_coupon)->find($request->coupon_id);
+                if(empty($coupon)) return status(40004, '优惠券不可用');
+                $coupon->status = 2;
+                $coupon->coupon_order = $order->order_sn;
+                $coupon->save();
+                $order->coupon = $coupon->money;
+                $order->order_amount = $order->order_amount-$coupon->money;
+            }
+            $order->pay_time = date('Y-m-d H:i:s', time());
+            $order->shipping_time = date('Y-m-d H:i:s', time());
+            $order->done_time = date('Y-m-d H:i:s', time());
+            $order->save();
+            // 余额付款扣卡
+            if($request->pay_id ==1){
+                $user = User::find($order['user_id']);
+                if($user->user_money < $order->order_amount) return status(40004, '账户余额不足');
+                $user->user_money = $user->user_money-$order->order_amount;
+                $user->save();
+                // 记录余额交易流水
+                $user_account = new User_account();
+                $user_account->account_sn = sn_20();
+                $user_account->order_sn = $order->order_sn;
+                $user_account->user_id = $order->user_id;
+                $user_account->money_change = -$order->order_amount;
+                $user_account->money = $user->user_money;
+                $user_account->change_name = '订单支付';
+                $user_account->change_desc = '余额主动扣卡';
+                $user_account->shop_id = $admin['shop_id'];
+                $user_account->save();
+            }
+            // 记录订单操作
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 4;
+            $order_action->shipping_status = 6;
+            $order_action->pay_status = 3;
+            $order_action->action_note = '客户支付完成，车辆已取走。';
+            $order_action->save();
+            return status(200, '操作成功');
+            DB::commit();
+            return status(200, '修改成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 可操作车护订单数量接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     */
+    public function car_order_number (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        // 待施工
+        $to_work_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 4)
+            ->count();
+        // 施工中
+        $work_ok_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 5)
+            ->count();
+        // 待入账
+        $tally_order_number = Order::where('shop_id', $admin['shop_id'])->where('order_status', 3)->count();
+        $info = [
+            'to_work_number' => $to_work_number,
+            'work_ok_number' => $work_ok_number,
+            'tally_order_number' => $tally_order_number,
+        ];
+        return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 购买服务接口
+     *
+     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     * 服务类别：1套餐 2价目表
+     */
+    public function add_serve_order (Request $request){
+        if(empty($request->serve_type)) return status(40001, 'serve_type参数有误');
+        if(empty($request->serve_sn)) return status(40002, 'serve_sn参数有误');
+        if(empty($request->number)) return status(40003, 'number参数有误');
+        if(empty($request->user_id)) return status(40004, 'user_id参数有误');
+        if(empty($request->pay_id)) return status(40005, 'pay_id参数有误');
+        if(empty($request->order_amount)) return status(40006, 'order_amount参数有误');
+        if(empty($request->end_time)) return status(40007, 'end_time参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $user = User::find($request->user_id);
+        $pay = Payment::find($request->pay_id);
+        if(empty($user)) return status(40008, '用户不存在');
+        if($request->serve_type == 1){
+            $serve = Shop_serve::where('serve_sn', $request->serve_sn)->first();
+            $goods_sn = $serve['serve_sn'];
+            $goods_name = $serve['serve_name'];
+            $goods_img = $serve['serve_img'];
+            $market_price = $serve['market_price'];
+        }else if($request->serve_type == 2){
+            $serve = Price_list::where('price_sn', $request->serve_sn)->first();
+            $goods_sn = $serve['price_sn'];
+            $goods_name = $serve['price_list_name'];
+            $goods_img = '';
+            $market_price = 0;
+        }else{
+            return status(40009, 'serve_type参数有误');
+        }
+        if(empty($serve)) return status(40010, '服务信息不正确');
+        DB::beginTransaction();
+        try {
+            $order_sn = sn_26();
+            // 1.添加订单
+            $order = new Order();
+            $order->order_sn = $order_sn;
+            $order->order_type = 5;
+            $order->user_id = $user['id'];
+            $order->shop_id = $admin['shop_id'];
+            $order->order_status = 4;
+            $order->shipping_type = 4;
+            $order->shipping_status = 9;
+            $order->pay_status = 3;
+            $order->consignee = $user['user_name'];
+            $order->phone = $user['phone'];
+            $order->pay_id = $request->pay_id;
+            $order->pay_name = $pay['pay_name'];
+            $order->goods_amount = $request->order_amount;
+            $order->shipping_fee = 0;
+            $order->coupon = 0;
+            $order->order_amount = $request->order_amount;
+            $order->pay_time = date("Y-m-d H:i:s", time());
+            $order->shipping_time = date("Y-m-d H:i:s", time());
+            $order->admin_id = $admin['id'];
+            $order->done_time = date("Y-m-d H:i:s", time());
+            $order->save();
+            // 2.写入订单商品
+            $order_goods = new Order_good();
+            $order_goods->order_sn = $order_sn;
+            $order_goods->goods_sn = $goods_sn;
+            $order_goods->goods_name = $goods_name;
+            $order_goods->goods_img = $goods_img;
+            $order_goods->goods_number = $request->number;
+            $order_goods->market_price = $market_price;
+            $order_goods->make_price = $request->order_amount/$request->number;
+            $order_goods->attr_name = '门店服务';
+            $order_goods->save();
+            // 3.如果是余额支付 自动扣卡
+            if($request->pay_id ==1){
+                if($user->user_money < $request->order_amount) return status(40004, '账户余额不足');
+                $user->user_money = $user->user_money-$request->order_amount;
+                $user->save();
+                // 记录余额交易流水
+                $user_account = new User_account();
+                $user_account->account_sn = sn_20();
+                $user_account->order_sn = $order_sn;
+                $user_account->user_id = $user['id'];
+                $user_account->money_change = -$request->order_amount;
+                $user_account->money = $user->user_money;
+                $user_account->change_name = '订单支付';
+                $user_account->change_desc = '余额主动扣卡';
+                $user_account->shop_id = $admin['shop_id'];
+                $user_account->save();
+            }
+            // 4.商品写入用户账户
+            if($request->serve_type == 1){
+                for ($i = 1; $i <= $request->number; $i++){
+                    $shop_serve_user = new Shop_serve_user();
+                    $shop_serve_user->user_serve_sn = sn_26();
+                    $shop_serve_user->shop_serve_id = $serve['id'];
+                    $shop_serve_user->user_id = $user['id'];
+                    $shop_serve_user->order_sn = $order_sn;
+                    $shop_serve_user->serve_name = $serve['serve_name'];
+                    $shop_serve_user->serve_brief = $serve['serve_brief'];
+                    $shop_serve_user->serve_item = $serve['serve_item'];
+                    $shop_serve_user->serve_img = $serve['serve_img'];
+                    $shop_serve_user->serve_start_time = date("Y-m-d", time());
+                    $shop_serve_user->serve_end_time = $request->end_time;
+                    $shop_serve_user->valid_except = $serve['valid_except'];
+                    $shop_serve_user->market_price = $serve['market_price'];
+                    $shop_serve_user->make_price = $serve['shop_price'];
+                    $shop_serve_user->usable_range = $serve['usable_range'];
+                    $shop_serve_user->else_msg = $serve['else_msg'];
+                    $shop_serve_user->bc_msg = $serve['bc_msg'];
+                    $shop_serve_user->status = 1;
+                    $shop_serve_user->pay_status = 3;
+                    $shop_serve_user->save();
+                }
+            }else if($request->serve_type == 2){
+                for ($i = 1; $i <= $request->number; $i++){
+                    $price_list_user = new Price_list_user();
+                    $price_list_user->user_id = $user['id'];
+                    $price_list_user->price_list_id = $serve['id'];
+                    $price_list_user->shop_id = $admin['shop_id'];
+                    $price_list_user->admin_id = $admin['id'];
+                    $price_list_user->price_list_sn = sn_26();
+                    $price_list_user->order_sn = $order_sn;
+                    $price_list_user->price_list_name = $serve['price_list_name'];
+                    $price_list_user->price_list_money = $serve['price'];
+                    $price_list_user->end_time = $request->end_time;
+                    $price_list_user->status = 1;
+                    $price_list_user->pay_status = 3;
+                    $price_list_user->save();
+                }
+            }
+            // 5.写入订单操作状态
+            $order_action = new Order_action();
+            $order_action->order_sn = $order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 4;
+            $order_action->shipping_status = 9;
+            $order_action->pay_status = 3;
+            $order_action->action_note = '员工销售服务';
+            $order_action->save();
+            DB::commit();
+            return status(200, 'success', ['order_sn' => $order_sn]);
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 }

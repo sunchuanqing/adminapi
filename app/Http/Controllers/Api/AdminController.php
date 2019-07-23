@@ -194,4 +194,20 @@ class AdminController extends Controller
         ];
         return status(200, 'success', $data);
     }
+
+
+    /**
+     * 施工人员列表接口
+     *
+     */
+    public function master_worker (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $admin_role = Admin_role::where('shop_id', $admin['shop_id'])->where('role_name', '师傅')->first();
+        $info = Admin::where('admin_role_id', $admin_role['id'])
+            ->where('status', 1)
+            ->where('admin_status', 1)
+            ->select(['id', 'name'])
+            ->get();
+        return status(200, 'success', $info);
+    }
 }

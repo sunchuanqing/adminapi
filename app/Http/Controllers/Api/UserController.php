@@ -3,7 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\Coupon_user;
+use App\Models\Order;
+use App\Models\Price_list_user;
 use App\Models\Recharge_balance;
+use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_address;
 use App\Models\User_car;
@@ -125,6 +128,7 @@ class UserController extends Controller
         if(empty($request->car_info)) return status(40005, 'car_info参数有误');
         if(empty($request->car_colour)) return status(40006, 'car_colour参数有误');
         if(empty($request->car_type)) return status(40007, 'car_type参数有误');
+        if(User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->count() == 1) return status(40008, '车辆已存在');
         $user_car = new User_car();
         $user_car->user_id = $request->user_id;
         $user_car->car_province = $request->car_province;
@@ -167,6 +171,9 @@ class UserController extends Controller
         if(empty($request->car_type)) return status(40007, 'car_type参数有误');
         $user_car = User_car::find($request->id);
         if(empty($user_car)) return status(404, '车辆不存在');
+        if($user_car->plate_number != $request->car_province.$request->car_city.$request->car_number){
+            if(User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->count() == 1) return status(40008, '车辆已存在');
+        }
         $user_car->car_province = $request->car_province;
         $user_car->car_city = $request->car_city;
         $user_car->car_number = $request->car_number;
@@ -201,7 +208,8 @@ class UserController extends Controller
         }else if(!empty($request->plate_number)){
             $user_car = User_car::where('plate_number', $request->plate_number)
                 ->join('users', 'user_cars.user_id', '=', 'users.id')
-                ->select(['user_cars.id', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.plate_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.car_type', 'user_cars.remark', 'users.user_name', 'users.phone'])
+                ->join('user_ranks', 'users.rank_id', '=', 'user_ranks.id')
+                ->select(['user_cars.id', 'user_cars.user_id', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.plate_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.car_type', 'user_cars.remark', 'users.user_name', 'users.phone', 'users.sex', 'users.user_money', 'users.user_sn', 'user_ranks.name as vip_name'])
                 ->get();
             if(count($user_car) == 0) return status(404, '车辆不存在');
             return status(200, 'success', $user_car);
@@ -220,10 +228,18 @@ class UserController extends Controller
         if(empty($request->car_province)) return status(40002, 'car_province参数有误');
         if(empty($request->car_city)) return status(40003, 'car_city参数有误');
         if(empty($request->car_number)) return status(40004, 'car_number参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $user = User::find($request->user_id);
         if(empty($user)) return status(40005, '用户信息不正确');
         $user_car = User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->first();
         if(empty($user_car)) return status(40006, '车辆信息不正确');
+        if(Order::where('shop_id', $admin['shop_id'])->where('user_car_id', $user_car['id'])->where('order_status', '!=', 4)->count() > 0){
+            if(empty($request->order_id)) return status(40007, 'order_id参数有误');
+            $order = Order::find($request->order_id);
+            if($order['serve_user_id'] != null) return status(40008, '订单含有优惠套餐不许换绑');
+            $order->user_id = $request->user_id;
+            $order->save();
+        }
         $user_car->user_id = $request->user_id;
         $user_car->save();
         return status(200, '绑定成功');
@@ -321,7 +337,11 @@ class UserController extends Controller
         $coupon_user = Coupon_user::where('user_id', $request->user_id)
             ->whereIn('subject_type', [1, 2])
             ->whereIn('shop_id', [0, $admin['shop_id']])
-            ->select(['coupon_sn', 'money', 'full_money', 'coupon_name', 'coupon_type'])
+            ->whereIn('pay_status', [0, 3])
+            ->where('status', 1)
+            ->where('coupon_start_time', '<=', date('Y-m-d', time()))
+            ->where('coupon_end_time', '>=', date('Y-m-d', time()))
+            ->select(['id', 'coupon_sn', 'money', 'full_money', 'coupon_name', 'coupon_type'])
             ->get();
         if(count($coupon_user) == 0) return status(404, '找不到可用优惠券');
         return status(200, 'success', $coupon_user);
@@ -405,5 +425,32 @@ class UserController extends Controller
         }
         if(count($user_account->get()) == 0) return status(404, '没有数据');
         return status(200, 'success', $user_account->get());
+    }
+
+
+    /**
+     * 会员已购的优惠套餐列表接口
+     *
+     */
+    public function shop_serve_user (Request $request){
+        if(empty($request->user_id)) return status(40001, 'user_id参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $shop_serve_user = Shop_serve_user::where('user_id', $request->user_id)
+            ->where('status', 1)
+            ->join('shop_serves', 'shop_serve_users.shop_serve_id', '=', 'shop_serves.id')
+            ->where('shop_serves.shop_id', $admin['shop_id'])
+            ->select(['shop_serve_users.user_serve_sn', 'shop_serves.serve_name', 'shop_serves.shop_price', 'shop_serves.serve_item'])
+            ->get();
+        $price_list_user = Price_list_user::where('shop_id', $admin['shop_id'])
+            ->where('status', 1)
+            ->where('pay_status', 3)
+            ->select(['price_list_sn', 'price_list_name', 'price_list_money'])
+            ->get();
+        $data = [
+            'shop_serve_user' => $shop_serve_user,
+            'price_list_user' => $price_list_user
+        ];
+        if(empty($data)) return status(404, '没有优惠套餐');
+        return status(200, 'success', $data);
     }
 }
