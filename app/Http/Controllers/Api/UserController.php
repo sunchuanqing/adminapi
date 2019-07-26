@@ -49,50 +49,57 @@ class UserController extends Controller
         if(empty($request->user_rank_id)) return status(40004, 'user_rank_id参数不正确');
         if(empty($request->sex)) return status(40005, 'sex参数不正确');
         if(User::where('phone', $request->phone)->count() == 1) return status(40006, '会员已存在');
-        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        $user = new User();
-        $user->user_sn = $request->user_sn;
-        $user->user_name = $request->user_name;
-        $user->phone = $request->phone;
-        $user->user_rank_id = $request->user_rank_id;
-        $user->sex = $request->sex;
-        $user->photo = 'http://img.jiaranjituan.cn/photo.jpg';
-        $user->source_msg = $admin['shop_name'];
-        $user->source_shop_id = $admin['shop_id'];
-        $user->save();
-        $user_info = User::where('phone', $request->phone)->first();
-        if(!empty($request->car)){
-            $car = json_decode($request->car, true);
-            $user_car = new User_car();
-            foreach ($car as $k => $v) {
-                $user_car->user_id = $user_info['id'];
-                $user_car->car_province = $v['car_province'];
-                $user_car->car_city = $v['car_city'];
-                $user_car->car_number = $v['car_number'];
-                $user_car->plate_number = $v['car_province'].$v['car_city'].$v['car_number'];
-                $user_car->car_info = $v['car_info'];
-                $user_car->car_colour = $v['car_colour'];
-                $user_car->car_type = $v['car_type'];
-                $user_car->remark = $v['remark'];
-                $user_car->save();
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            $user = new User();
+            $user->user_sn = $request->user_sn;
+            $user->user_name = $request->user_name;
+            $user->phone = $request->phone;
+            $user->user_rank_id = $request->user_rank_id;
+            $user->sex = $request->sex;
+            $user->photo = 'http://img.jiaranjituan.cn/photo.jpg';
+            $user->source_msg = $admin['shop_name'];
+            $user->source_shop_id = $admin['shop_id'];
+            $user->save();
+            $user_info = User::where('phone', $request->phone)->first();
+            if(!empty($request->car)){
+                $car = json_decode($request->car, true);
+                foreach ($car as $k => $v) {
+                    $user_car = new User_car();
+                    $user_car->user_id = $user_info['id'];
+                    $user_car->car_province = $v['car_province'];
+                    $user_car->car_city = $v['car_city'];
+                    $user_car->car_number = $v['car_number'];
+                    $user_car->plate_number = $v['car_province'].$v['car_city'].$v['car_number'];
+                    $user_car->car_info = $v['car_info'];
+                    $user_car->car_colour = $v['car_colour'];
+                    $user_car->car_type = $v['car_type'];
+                    $user_car->remark = $v['remark'];
+                    $user_car->save();
+                }
             }
-        }
-        if(!empty($request->address)){
-            $car = json_decode($request->address, true);
-            $user_address = new User_address();
-            foreach ($car as $k => $v) {
-                $user_address->user_id = $user_info['id'];
-                $user_address->name = $user_info['user_name'];
-                $user_address->phone = $user_info['phone'];
-                $user_address->country = 86;
-                $user_address->province = $v['province'];
-                $user_address->city = $v['city'];
-                $user_address->district = $v['district'];
-                $user_address->address = $v['address'];
-                $user_address->save();
+            if(!empty($request->address)){
+                $car = json_decode($request->address, true);
+                foreach ($car as $k => $v) {
+                    $user_address = new User_address();
+                    $user_address->user_id = $user_info['id'];
+                    $user_address->name = $user_info['user_name'];
+                    $user_address->phone = $user_info['phone'];
+                    $user_address->country = 86;
+                    $user_address->province = $v['province'];
+                    $user_address->city = $v['city'];
+                    $user_address->district = $v['district'];
+                    $user_address->address = $v['address'];
+                    $user_address->save();
+                }
             }
+            DB::commit();
+            return status(200, '开卡成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
         }
-        return status(200, '开卡成功');
     }
 
 
@@ -232,7 +239,17 @@ class UserController extends Controller
         $user = User::find($request->user_id);
         if(empty($user)) return status(40005, '用户信息不正确');
         $user_car = User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->first();
-        if(empty($user_car)) return status(40006, '车辆信息不正确');
+//        if(empty($user_car)) return status(40006, '车辆信息不正确');
+        if(empty($user_car)) {
+            $user_car = new User_car();
+            $user_car->car_province = $request->car_province;
+            $user_car->car_city = $request->car_city;
+            $user_car->car_number = $request->car_number;
+            $user_car->plate_number = $request->car_province.$request->car_city.$request->car_number;
+            $user_car->user_id = $request->user_id;
+            $user_car->save();
+            return status(200, '绑定成功');
+        }
         if(Order::where('shop_id', $admin['shop_id'])->where('user_car_id', $user_car['id'])->where('order_status', '!=', 4)->count() > 0){
             if(empty($request->order_id)) return status(40007, 'order_id参数有误');
             $order = Order::find($request->order_id);
@@ -383,7 +400,12 @@ class UserController extends Controller
             $user_account->money_change = $request->money;
             $user_account->money = $user['user_money'];
             $user_account->change_name = '余额充值';
-            $user_account->change_desc = $request->change_desc;
+            if(empty($request->change_desc)) {
+                $user_account->change_desc = '余额充值';
+            }else{
+                $user_account->change_desc = $request->change_desc;
+            }
+            $user_account->shop_id = $admin['shop_id'];
             $user_account->save();
             // 3.修改会员等级
             // 4.赠送礼品
@@ -437,11 +459,13 @@ class UserController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $shop_serve_user = Shop_serve_user::where('user_id', $request->user_id)
             ->where('status', 1)
+            ->where('pay_status', 3)
             ->join('shop_serves', 'shop_serve_users.shop_serve_id', '=', 'shop_serves.id')
             ->where('shop_serves.shop_id', $admin['shop_id'])
             ->select(['shop_serve_users.user_serve_sn', 'shop_serves.serve_name', 'shop_serves.shop_price', 'shop_serves.serve_item'])
             ->get();
-        $price_list_user = Price_list_user::where('shop_id', $admin['shop_id'])
+        $price_list_user = Price_list_user::where('user_id', $request->user_id)
+            ->where('shop_id', $admin['shop_id'])
             ->where('status', 1)
             ->where('pay_status', 3)
             ->select(['price_list_sn', 'price_list_name', 'price_list_money'])
@@ -450,7 +474,6 @@ class UserController extends Controller
             'shop_serve_user' => $shop_serve_user,
             'price_list_user' => $price_list_user
         ];
-        if(empty($data)) return status(404, '没有优惠套餐');
         return status(200, 'success', $data);
     }
 }

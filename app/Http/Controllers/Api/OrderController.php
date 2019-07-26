@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\Admin;
 use App\Models\Coupon_user;
 use App\Models\Flower;
 use App\Models\Order;
@@ -467,12 +468,12 @@ class OrderController extends Controller
         }
         $user_car_info = User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->first();
         // 获取此订单选择的服务项目
-        if(empty($request->car_info)) return status(40005, 'car_info参数有误');
-        $car_info = json_decode($request->car_info, true);
-        if(count($car_info) == 0) return status(40006, '选择项目错误');
+        if(empty($request->goods_info)) return status(40005, 'goods_info参数有误');
+        $goods_info = json_decode($request->goods_info, true);
+        if(count($goods_info) == 0) return status(40006, '选择项目错误');
         $data_goods = array();// 订单商品
         $goods_money = 0;// 商品总价
-        foreach ($car_info as $k => $v){
+        foreach ($goods_info as $k => $v){
             $price_list = Price_list::find($v['id']);
             $goods_money = $goods_money+$price_list['price']*$v['number'];
             if($price_list['price_list_type_id'] == 0){
@@ -496,46 +497,43 @@ class OrderController extends Controller
             $order->consignee = $user['user_name'];
             $order->phone = $user['phone'];
             $order->shipping_fee = 0;
-            // 判断是否使用优惠服务
-            if(!empty($request->user_server_sn)){
+            // 判断是否使用已购优惠服务
+            $server_money = 0;// 服务优惠价格
+            if(!empty($request->user_serve_sn)){
                 $server = Shop_serve_user::where('user_id', $user['id'])
                     ->where('status', 1)
                     ->where('pay_status', 3)
-                    ->where('user_serve_sn', $request->user_server_sn)
+                    ->where('user_serve_sn', $request->user_serve_sn)
                     ->first();
                 if(!empty($server)){
                     $server->status = 2;
                     $server->save();
-                    $order_amount = $goods_money-$server['market_price'];
-                    $order->server_user_sn = $request->user_server_sn;
-                    $order->server = $server['market_price'];
+                    $order->server_user_sn = $request->user_serve_sn;
+                    $server_money = $server_money+$server['market_price'];
                     $order->serve_id = $server->shop_serve_id;
                     $order->serve_user_id = $server->id;
                 }else{
                     $price_list_user = Price_list_user::where('user_id', $user['id'])
                         ->where('status', 1)
                         ->where('pay_status', 3)
-                        ->where('price_list_sn', $request->user_server_sn)
+                        ->where('price_list_sn', $request->user_serve_sn)
                         ->first();
                     if(empty($price_list_user)) return status(40007, '优惠服务不可用');
                     $price_list_user->status = 2;
                     $price_list_user->save();
-                    $order_amount = $goods_money-$price_list_user['price_list_money'];
-                    $order->server_user_sn = $request->user_server_sn;
-                    $order->server = $price_list_user['price_list_money'];
+                    $order->server_user_sn = $request->user_serve_sn;
+                    $server_money = $server_money+$price_list_user['price_list_money'];
                     $order->price_list_user_id = $price_list_user->id;
                 }
-            }else{
-                if(!empty($request->serve_id)){
-                    $server = Shop_serve::find($request->serve_id);
-                    $order_amount = $goods_money-($server['market_price']-$server['shop_price']);
-                    $order->server = $server['market_price']-$server['shop_price'];
-                    $order->serve_id = $request->serve_id;
-                }else{
-                    $order_amount = $goods_money;
-                }
             }
-            $order->order_amount = $order_amount;
+            // 判断是否使用没有购买的优惠服务
+            if(!empty($request->serve_id)){
+                $server = Shop_serve::find($request->serve_id);
+                $server_money = $server_money+($server['market_price']-$server['shop_price']);
+                $order->serve_id = $request->serve_id;
+            }
+            $order->order_amount = $goods_money-$server_money;
+            $order->server = $server_money;
             $order->goods_amount = $goods_money;
             $order->pay_points = 0;
             $order->pay_points_money = 0;
@@ -590,6 +588,7 @@ class OrderController extends Controller
                     $order_goods->attr_name = '名车护理';
                     if($price_list['price_list_type_id'] == 0){
                         $order_goods->status = null;
+                        $order_goods->to_buyer = $v['to_buyer'];
                     }else{
                         $order_goods->status = 4;
                     }
@@ -597,6 +596,7 @@ class OrderController extends Controller
                     $change_money = $change_money+$price_list->price*$v['number'];
                 }else{// 修改
                     $order_goods = Order_good::find($v['id']);
+                    $order_goods->to_buyer = $v['to_buyer'];
                     if(empty($order_goods)) return status(40005, '订单商品id不正确');
                     if($order_goods['goods_number'] < $v['number']){// 数量增加
                         if($order_goods['status'] != null) return status(40008, '商品不可修改');
@@ -615,7 +615,9 @@ class OrderController extends Controller
                             $order_goods->delete();
                         }
                     }else{
-                        return status(40009, '商品数量有误');
+                        $order_goods = Order_good::find($v['id']);
+                        $order_goods->to_buyer = $v['to_buyer'];
+                        $order_goods->save();
                     }
                 }
             }
@@ -667,7 +669,7 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $price_list = Price_list::where('price_list_type_id', '>', 0)
             ->where('shop_id', $admin['shop_id'])
-            ->select(['id', 'price_list_name', 'price', 'sell_money', 'job_money']);
+            ->select(['id', 'price_sn as serve_sn', 'price_list_name', 'price', 'sell_money', 'job_money']);
         if(!empty($request->name)){
             $price_list->where('price_list_name', 'like', '%'.$request->name.'%');
         }
@@ -704,7 +706,7 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $car_goods = Price_list::where('shop_id', $admin['shop_id'])
             ->where('price_list_type_id', 0)
-            ->select(['id', 'price_list_name', 'price', 'sell_money', 'job_money'])
+            ->select(['id', 'price_sn as goods_sn', 'price_list_name', 'price', 'sell_money', 'job_money'])
             ->get();
         return status(200, 'success', $car_goods);
     }
@@ -745,6 +747,7 @@ class OrderController extends Controller
         if(empty($request->work_id)) return status(40002, 'work_id参数有误');
         $order = Order_good::find($request->id);
         if($order->status != 4) return status(40003, '操作有误');
+        $order->to_buyer = $request->to_buyer;
         $order->status = 5;
         $order->work_id = $request->work_id;
         $order->save();
@@ -765,9 +768,12 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order = Order_good::find($request->id);
         if($order->status != 5) return status(40002, '操作有误');
-        if($order->work_id != $request->work_id){
-            $order->work_id = $request->work_id;
+        if(!empty($request->work_id)){
+            if($order->work_id != $request->work_id){
+                $order->work_id = $request->work_id;
+            }
         }
+        $order->to_buyer = $request->to_buyer;
         $order->status = 6;
         $order->save();
         if(Order_good::where('order_sn', $order->order_sn)->where('status', '!=', 6)->count() == 0){
@@ -798,11 +804,12 @@ class OrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order = Order::where('shop_id', $admin['shop_id'])
             ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
-            ->select(['orders.id', 'orders.order_sn', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info'])
+            ->select(['orders.id', 'orders.order_sn', 'orders.order_amount', 'orders.created_at', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info'])
             ->whereIn('orders.order_status', $order_status)
             ->with(['order_goods' => function($query){
                 $query->select('order_sn', 'goods_name', 'goods_number', 'status');
-            }]);
+            }])
+            ->orderBy('id', 'desc');
         if(!empty($request->time)){
             $order->whereDate('orders.created_at', $request->time);
         }
@@ -828,7 +835,19 @@ class OrderController extends Controller
             ->join('user_cars', 'orders.user_car_id', '=', 'user_cars.id')
             ->join('users', 'orders.user_id', '=', 'users.id')
             ->join('user_ranks', 'users.rank_id', '=', 'user_ranks.id')
-            ->select(['orders.id', 'orders.order_sn', 'orders.goods_amount', 'orders.coupon', 'orders.server', 'orders.order_amount', 'orders.created_at', 'orders.done_time', 'orders.pay_time', 'orders.pay_id', 'orders.pay_name', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'user_cars.car_colour', 'user_cars.remark', 'users.user_sn', 'users.user_name', 'users.sex', 'users.phone', 'users.user_money', 'user_ranks.name'])
+            ->select(['orders.id', 'orders.order_sn', 'orders.order_status', 'orders.goods_amount', 'orders.to_buyer', 'orders.coupon', 'orders.server', 'orders.order_amount', 'orders.created_at', 'orders.done_time', 'orders.pay_time', 'orders.pay_id', 'orders.pay_name', 'orders.serve_user_id', 'orders.serve_id', 'orders.price_list_user_id', 'user_cars.car_province', 'user_cars.car_city', 'user_cars.car_number', 'user_cars.car_info', 'user_cars.car_type', 'user_cars.car_colour', 'user_cars.remark', 'users.user_sn', 'users.id as user_id', 'users.user_name', 'users.sex', 'users.phone', 'users.user_money', 'user_ranks.name'])
+            ->with(['order_coupon' => function($query){
+                $query->select('id', 'coupon_order', 'coupon_name', 'money');
+            }])
+            ->with(['order_serve' => function($query){
+                $query->select('id', 'serve_name', 'market_price');
+            }])
+            ->with(['serve_info' => function($query){
+                $query->select('id', 'serve_name', 'market_price');
+            }])
+            ->with(['price_list_serve' => function($query){
+                $query->select('id', 'price_list_name', 'price_list_money');
+            }])
             ->find($request->order_id);
         if(empty($order_info)) return status(404, '找不到数据');
         return status(200, 'success', $order_info);
@@ -855,6 +874,7 @@ class OrderController extends Controller
             $order->pay_id = $request->pay_id;
             $order->pay_name = $pay->pay_name;
             if(!empty($request->coupon_id)){
+                // 计算订单需要支付的价格
                 if($order->serve_id == null){
                     $order_goods_coupon = $order['order_amount'];
                 }else{
@@ -899,9 +919,8 @@ class OrderController extends Controller
             $order_action->pay_status = 3;
             $order_action->action_note = '客户支付完成，车辆已取走。';
             $order_action->save();
-            return status(200, '操作成功');
             DB::commit();
-            return status(200, '修改成功');
+            return status(200, '操作成功');
         } catch (QueryException $ex) {
             DB::rollback();
             return status(400, '参数有误');
@@ -945,7 +964,7 @@ class OrderController extends Controller
      */
     public function add_serve_order (Request $request){
         if(empty($request->serve_type)) return status(40001, 'serve_type参数有误');
-        if(empty($request->serve_sn)) return status(40002, 'serve_sn参数有误');
+        if(empty($request->id)) return status(40002, 'id参数有误');
         if(empty($request->number)) return status(40003, 'number参数有误');
         if(empty($request->user_id)) return status(40004, 'user_id参数有误');
         if(empty($request->pay_id)) return status(40005, 'pay_id参数有误');
@@ -956,13 +975,13 @@ class OrderController extends Controller
         $pay = Payment::find($request->pay_id);
         if(empty($user)) return status(40008, '用户不存在');
         if($request->serve_type == 1){
-            $serve = Shop_serve::where('serve_sn', $request->serve_sn)->first();
+            $serve = Shop_serve::find($request->id);
             $goods_sn = $serve['serve_sn'];
             $goods_name = $serve['serve_name'];
             $goods_img = $serve['serve_img'];
             $market_price = $serve['market_price'];
         }else if($request->serve_type == 2){
-            $serve = Price_list::where('price_sn', $request->serve_sn)->first();
+            $serve = Price_list::find($request->id);
             $goods_sn = $serve['price_sn'];
             $goods_name = $serve['price_list_name'];
             $goods_img = '';
@@ -1081,5 +1100,31 @@ class OrderController extends Controller
             DB::rollback();
             return status(400, '参数有误');
         }
+    }
+
+
+    /**
+     * 订单商品明细接口
+     *
+     * status为4 待施工
+     * status为null 待销售产品
+     */
+    public function order_goods_info (Request $request){
+        if(empty($request->id)) return status(40001, 'id参数有误');
+        $order_goods = Order_good::join('price_lists', 'order_goods.goods_sn', '=', 'price_lists.price_sn')
+            ->join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->join('admins', 'orders.admin_id', '=', 'admins.id')
+            ->select(['order_goods.id', 'order_goods.goods_sn', 'order_goods.make_price', 'order_goods.to_buyer', 'order_goods.work_id', 'order_goods.status', 'admins.name', 'price_lists.sell_money', 'price_lists.job_money'])
+            ->find($request->id);
+        if(($order_goods['status'] != 4) && ($order_goods['status'] != null)){
+            $work_admin = json_decode($order_goods['work_id'], true);
+            $work_admin_info = [];
+            foreach($work_admin as $k => $v){
+                $admin = Admin::find($v['admin_id']);
+                array_push($work_admin_info, ['id' => $admin['id'], 'name' => $admin['name']]);
+            }
+            $order_goods->work_admin = $work_admin_info;
+        }
+        return status(200, 'success', $order_goods);
     }
 }

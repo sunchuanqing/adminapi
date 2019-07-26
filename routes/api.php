@@ -43,6 +43,21 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('tally_order', 'OrderController@tally_order');// 车护订单入账
         $route->post('car_order_number', 'OrderController@car_order_number');// 可操作车护订单数量
         $route->post('add_serve_order', 'OrderController@add_serve_order');// 购买服务
+        $route->post('order_goods_info', 'OrderController@order_goods_info');// 订单商品信息
+        $route->group(['prefix' => 'luxury'], function ($route) {
+            $route->post('book_order_list', 'LuxuryOrderController@book_order_list');// 预约订单列表
+            $route->post('inform_logistics', 'LuxuryOrderController@inform_logistics');// 通知物流
+            $route->post('claim_goods', 'LuxuryOrderController@claim_goods');// 物流揽件
+            $route->post('receive_goods', 'LuxuryOrderController@receive_goods');// 送货至门店
+            $route->post('add_visits_order', 'LuxuryOrderController@add_visits_order');// 发起上门取件
+            $route->post('article_type', 'LuxuryOrderController@article_type');// 奢护物件类别
+            $route->post('serve_item', 'LuxuryOrderController@serve_item');// 奢护服务项目
+            $route->post('price_list', 'LuxuryOrderController@price_list');// 奢护价目表
+            $route->post('goods_part', 'LuxuryOrderController@goods_part');// 奢护附带物件
+            $route->post('goods_effect', 'LuxuryOrderController@goods_effect');// 奢护不良效果
+            $route->post('goods_flaw', 'LuxuryOrderController@goods_flaw');// 奢护物件瑕疵
+            $route->post('open_order', 'LuxuryOrderController@open_order');// 奢护开单
+        });
     });
 
     // 用户
