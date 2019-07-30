@@ -8,6 +8,7 @@ use App\Models\Goods_flaw;
 use App\Models\Goods_part;
 use App\Models\Order;
 use App\Models\Order_action;
+use App\Models\Order_good;
 use App\Models\Order_visit;
 use App\Models\Payment;
 use App\Models\Price_list;
@@ -29,14 +30,15 @@ class LuxuryOrderController extends Controller
     public function book_order_list (Request $request){
         if(empty($request->order_status)) return status(40001, 'order_status参数有误');
         if(empty($request->shipping_status)) return status(40002, 'shipping_status参数有误');
+        $shipping_status = json_decode($request->shipping_status, true);
         if(empty($request->status)) return status(40003, 'status参数有误');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order = Order::join('order_visits', 'orders.order_sn', '=', 'order_visits.order_sn')
             ->where('shop_id', $admin['shop_id'])
             ->where('order_status', $request->order_status)
-            ->where('shipping_status', $request->shipping_status)
+            ->whereIn('shipping_status', $shipping_status)
             ->where('order_visits.status', $request->status)
-            ->select(['orders.id', 'orders.consignee', 'orders.phone', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id'])
+            ->select(['orders.id', 'orders.consignee', 'orders.phone', 'orders.shipping_status', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id'])
             ->orderBy('id', 'desc');
         if(!empty($request->name)) {
             $order->where('orders.consignee', 'like', '%'.$request->name.'%');
@@ -252,8 +254,8 @@ class LuxuryOrderController extends Controller
                 $order_sn = sn_26();
             }else{
                 // 预约订单修改
-                $user = User::where('phone', $request->phone)->first();
                 $order = Order::find($request->order_id);
+                $user = User::first($order['user_id']);
                 $order_sn = $order['order_sn'];
             }
             // 1.订单信息
@@ -295,7 +297,7 @@ class LuxuryOrderController extends Controller
             $goods_info = json_decode($request->goods_info, true);
             foreach ($goods_info as $k => $v){
                 $goods_amount = $goods_amount+$v['make_price'];
-                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => $v['price_sn'], 'goods_name' => $v['brand'].$v['colour'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'part_sn' => sn_20(), 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => sn_20(), 'goods_name' => $v['goods_name'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'price_list_info' => json_encode($v['price_list_info']), 'shipping_status' => 1, 'is_rework' => 1, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
             }
             $order->goods_amount = $goods_amount;
             $order->shipping_fee = $shipping_fee;
@@ -446,22 +448,257 @@ class LuxuryOrderController extends Controller
 
 
     /**
-     * 奢护开单后订单列表接口
+     * 奢护开单后物件列表接口
      *
-     * 订单类别：1奢饰品护理 2名车护理 3花艺 4优惠券 5优惠服务 6好货  order_type
-     * 订单状态：1已预约 2洗护中 3洗护完工 4已完成 5已取消 6已下单 7制作中 8制作完成 order_status
-     * 配送状态：1未揽件 2已揽件 3.已接收 4未发货 5后台显示已发货 客户端显示待收货 6已收货 7已退货 8到店自取 9发放账户  shipping_status
-     * 支付状态：1未付款 2付款中 3已付款  pay_status
-     * 配送方式：1自取 2快递 3同城上门 4账户  shipping_type
-     *
-     * 待出库：order_status = 3  shipping_status = 3
-     * 待出库：order_status = 3  shipping_status = 3
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
-//    public function order_list (Request $request){
-//        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-//        $order_list = Order::where('shop_id', $admin['shop_id'])
-//            ->where('order_status', )
-//            ->get();
-//
-//    }
+    public function order_goods_list (Request $request){
+        if(empty($request->status)) return status(40001, 'status参数有误');
+        if(empty($request->shipping_status)) return status(40002, 'shipping_status参数有误');
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        $order_goods_list = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', $request->status)
+            ->where('order_goods.shipping_status', $request->shipping_status)
+            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.province', 'orders.city', 'orders.district', 'orders.address'])
+            ->get();
+        if(count($order_goods_list) == 0) return status(404, '找不到数据');
+        return status(200, 'success', $order_goods_list);
+    }
+
+
+    /**
+     * 员工送出接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function staff_send (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods_id = json_decode($request->order_goods_id, true);
+        $order_goods = Order_good::whereIn('id', $order_goods_id)
+            ->where('shipping_status', 1)
+            ->update(['shipping_info' => $request->shipping_info, 'shipping_status' => 5, 'logistics_type' => 2]);
+        if($order_goods == 0) return status(40002, '操作失败');
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 物流从门送出接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function logistics_send (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods_id = json_decode($request->order_goods_id, true);
+        $order_goods = Order_good::whereIn('id', $order_goods_id)
+            ->where('shipping_status', 1)
+            ->update(['shipping_status' => 2, 'logistics_type' => 1]);
+        if($order_goods == 0) return status(40002, '操作失败');
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 物流送达工厂接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function logistics_delivery (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods_id = json_decode($request->order_goods_id, true);
+        $order_goods = Order_good::whereIn('id', $order_goods_id)
+            ->where('shipping_status', 2)
+            ->update(['shipping_status' => 3]);
+        if($order_goods == 0) return status(40002, '操作失败');
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 物流从工厂取货接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function logistics_claim (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods_id = json_decode($request->order_goods_id, true);
+        $order_goods = Order_good::whereIn('id', $order_goods_id)
+            ->where('shipping_status', 3)
+            ->update(['shipping_status' => 4]);
+        if($order_goods == 0) return status(40002, '操作失败');
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 洗护完成物流送回门店接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function logistics_remand (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods_id = json_decode($request->order_goods_id, true);
+        $order_goods = Order_good::whereIn('id', $order_goods_id)
+            ->where('shipping_status', 4)
+            ->update(['shipping_status' => 5]);
+        if($order_goods == 0) return status(40002, '操作失败');
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 员工确认洗护到店接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function staff_receive (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods = Order_good::where('shipping_status', 5)
+            ->find($request->order_goods_id);
+        if(empty($order_goods)) return status(404, '数据不存在');
+        $order_goods->status = 2;
+        if(empty($request->shipping_type)) return status(40002, 'shipping_type参数有误');
+        $order_goods->shipping_type = $request->shipping_type;
+        if($request->shipping_type == 2){
+            if(empty($request->express_sn)) return status(40003, 'express_sn参数有误');
+            $order_goods->express_sn = $request->express_sn;
+        }else if($request->shipping_type == 3){
+            $order_goods->shipping_status = 6;
+        }
+        if($request->shipping_type != 1){
+            if(empty($request->province)) return status(40004, 'province参数有误');
+            $order_goods->province = $request->province;
+            if(empty($request->city)) return status(40005, 'city参数有误');
+            $order_goods->city = $request->city;
+            if(empty($request->district)) return status(40006, 'district参数有误');
+            $order_goods->district = $request->district;
+            if(empty($request->address)) return status(40007, 'address参数有误');
+            $order_goods->address = $request->address;
+        }
+        $order_goods->save();
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 员工发起返工接口
+     *
+     * 物件状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工  status
+     * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
+     */
+    public function staff_rework (Request $request){
+        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+        $order_goods = Order_good::where('shipping_status', 5)
+            ->find($request->order_goods_id);
+        if(empty($order_goods)) return status(404, '数据不存在');
+        $order_goods->is_rework = 2;
+        if($order_goods['logistics_type'] == 1){
+            $order_goods->shipping_status = 1;
+        }else{
+            $order_goods->shipping_status = 5;
+        }
+        $order_goods->save();
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 订单列表接口
+     *
+     * 默认查询当日的订单
+     */
+    public function order_list (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(!empty($request->time)){
+            $time = $request->time;
+        }else{
+            $time = date("Y-m-d", time());
+        }
+        $order = Order::where('shop_id', $admin['shop_id'])
+            ->join('admins', 'orders.admin_id', '=', 'admins.id')
+            ->where('orders.created_at', 'like', '%'.$time.'%')
+            ->orderBy('orders.id', 'desc')
+            ->select(['orders.id', 'order_sn', 'orders.created_at', 'consignee', 'orders.phone', 'name as admin_name']);
+        if(!empty($request->order_sn)){
+            $order->where('order_sn', 'like', '%'.$request->order_sn.'%');
+        }
+        $data = $order->get();
+        if(count($data) == 0) return status(404, '没有数据');
+        return status(200, 'success', $data);
+    }
+
+
+    /**
+     * 订单详情接口
+     *
+     */
+    public function order_info (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(empty($request->order_id)) return status(40001, 'order_id参数有误');
+        $order = Order::join('admins', 'orders.admin_id', '=', 'admins.id')
+            ->join('users', 'orders.user_id', '=', 'users.id')
+            ->with(['order_coupon' => function($query){
+                $query->select('coupon_order', 'coupon_name', 'money');
+            }])
+            ->with(['order_goods' => function($query){
+                $query->select('id', 'order_sn', 'goods_sn', 'goods_name', 'goods_img', 'make_price', 'to_buyer', 'is_urgent', 'brand', 'colour', 'price_list_info', 'is_rework');
+            }])
+            ->select(['orders.id', 'admins.name as admin_name', 'order_sn', 'orders.created_at', 'done_time', 'consignee', 'orders.phone', 'users.user_money', 'shipping_type', 'province', 'city', 'district', 'address', 'goods_amount', 'shipping_fee', 'coupon', 'order_amount'])
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->find($request->order_id);
+        if(empty($order)) return status(404, '没有数据');
+        return status(200, 'success', $order);
+    }
+
+
+    /**
+     * 物件列表接口
+     *
+     * 默认查询当日的订单物件
+     */
+    public function goods_list (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(!empty($request->time)){
+            $time = $request->time;
+        }else{
+            $time = date("Y-m-d", time());
+        }
+        $order_goods = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('shop_id', $admin['shop_id'])
+            ->where('orders.created_at', 'like', '%'.$time.'%')
+            ->orderBy('order_goods.id', 'desc')
+            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer']);
+        if(!empty($request->goods_sn)){
+            $order_goods->where('goods_sn', 'like', '%'.$request->goods_sn.'%');
+        }
+        $data = $order_goods->get();
+        if(count($data) == 0) return status(404, '没有数据');
+        return status(200, 'success', $data);
+    }
+
+
+    /**
+     * 物件详情接口
+     *
+     */
+    public function goods_info (Request $request){
+        if(empty($request->goods_id)) return status(40001, 'goods_id参数有误');
+        $goods = Order_good::select(['id', 'goods_name', 'price_list_info', 'is_urgent', 'is_rework', 'best_time', 'to_buyer', 'brand', 'colour', 'part', 'effect', 'flaw', 'goods_img', 'make_price'])->find($request->goods_id);
+        $price = json_decode($goods['price_list_info'], true);
+        foreach ($price as $k => $v){
+            $price_list = Price_list::find($v['id']);
+            $parent = Price_type::find($price_list['price_list_type_id']);
+            $price[$k]['desc'] = $parent['name'].'，'.$price_list['price_list_name'];
+        }
+        $goods['price_list'] = $price;
+        return status(200, 'success', $goods);
+    }
 }

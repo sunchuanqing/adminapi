@@ -57,6 +57,18 @@ Route::group(['namespace' => 'Api'], function ($route) {
             $route->post('goods_effect', 'LuxuryOrderController@goods_effect');// 奢护不良效果
             $route->post('goods_flaw', 'LuxuryOrderController@goods_flaw');// 奢护物件瑕疵
             $route->post('open_order', 'LuxuryOrderController@open_order');// 奢护开单
+            $route->post('order_goods_list', 'LuxuryOrderController@order_goods_list');// 奢护开单后物件列表
+            $route->post('staff_send', 'LuxuryOrderController@staff_send');// 员工送出接口
+            $route->post('logistics_send', 'LuxuryOrderController@logistics_send');// 物流从门送出
+            $route->post('logistics_delivery', 'LuxuryOrderController@logistics_delivery');// 物流送达工厂
+            $route->post('logistics_claim', 'LuxuryOrderController@logistics_claim');// 物流从工厂取货
+            $route->post('logistics_remand', 'LuxuryOrderController@logistics_remand');// 洗护完成物流送回门店
+            $route->post('staff_receive', 'LuxuryOrderController@staff_receive');// 员工确认洗护到店
+            $route->post('staff_rework', 'LuxuryOrderController@staff_rework');// 员工发起返工接口
+            $route->post('order_list', 'LuxuryOrderController@order_list');// 订单列表
+            $route->post('order_info', 'LuxuryOrderController@order_info');// 订单详情
+            $route->post('goods_list', 'LuxuryOrderController@goods_list');// 物件列表
+            $route->post('goods_info', 'LuxuryOrderController@goods_info');// 物件详情
         });
     });
 
