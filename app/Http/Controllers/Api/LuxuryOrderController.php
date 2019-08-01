@@ -226,7 +226,7 @@ class LuxuryOrderController extends Controller
     public function open_order (Request $request){
         DB::beginTransaction();
         try {
-            $shipping_fee = 0;// 配送费
+            $shipping_fee = 0;// 配送费  奢护不计算运费
             $coupon = 0;// 优惠券抵扣金额
             $goods_amount = 0;// 订单商品金额
             $data_goods = [];// 订单商品信息
@@ -255,7 +255,7 @@ class LuxuryOrderController extends Controller
             }else{
                 // 预约订单修改
                 $order = Order::find($request->order_id);
-                $user = User::first($order['user_id']);
+                $user = User::find($order['user_id']);
                 $order_sn = $order['order_sn'];
             }
             // 1.订单信息
@@ -284,7 +284,6 @@ class LuxuryOrderController extends Controller
                 $user_name = $request->address_user_name;
                 if(empty($request->address_phone)) return status(40009, 'address_phone参数有误');
                 $phone = $request->address_phone;
-                $shipping_fee = 10;
             }
             $order->consignee = $user_name;
             $order->phone = $phone;
@@ -297,21 +296,20 @@ class LuxuryOrderController extends Controller
             $goods_info = json_decode($request->goods_info, true);
             foreach ($goods_info as $k => $v){
                 $goods_amount = $goods_amount+$v['make_price'];
-                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => sn_20(), 'goods_name' => $v['goods_name'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'price_list_info' => json_encode($v['price_list_info']), 'shipping_status' => 1, 'is_rework' => 1, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => sn_20(), 'goods_name' => $v['goods_name'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'price_list_info' => json_encode($v['price_list_info']), 'shipping_status' => 1, 'shipping_type' => $request->shipping_type, 'is_rework' => 1, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
             }
             $order->goods_amount = $goods_amount;
             $order->shipping_fee = $shipping_fee;
             if(!empty($request->coupon_id)){
-                $coupon = Coupon_user::where('full_money', '<=' ,$order_goods_coupon)->find($request->coupon_id);
-                if(empty($coupon)) return status(40004, '优惠券不可用');
-                $coupon->status = 2;
-                $coupon->coupon_order = $order->order_sn;
-                $coupon->save();
-                $order->coupon = $coupon->money;
-                $order->order_amount = $order->order_amount-$coupon->money;
+                $coupon_user = Coupon_user::where('full_money', '<=' ,$goods_amount)->find($request->coupon_id);
+                if(empty($coupon_user)) return status(40004, '优惠券不可用');
+                $coupon_user->status = 2;
+                $coupon_user->coupon_order = $order->order_sn;
+                $coupon_user->save();
+                $coupon = $coupon_user->money;
             }
             $order->coupon = $coupon;
-            $order->order_amount = $goods_amount+$shipping_fee-$coupon;
+            $order->order_amount = $goods_amount-$coupon;
             $order->pay_time = date('Y-m-d H:i:s', time());
             $order->shipping_time = date('Y-m-d H:i:s', time());
             $order->admin_id = $admin['id'];
@@ -456,15 +454,30 @@ class LuxuryOrderController extends Controller
     public function order_goods_list (Request $request){
         if(empty($request->status)) return status(40001, 'status参数有误');
         if(empty($request->shipping_status)) return status(40002, 'shipping_status参数有误');
+        if(empty($request->shipping_type)) {
+            $shipping_type = [1, 2, 3];
+        }else{
+            $shipping_type = json_decode($request->shipping_type, true);
+        };
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order_goods_list = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
             ->where('orders.shop_id', $admin['shop_id'])
             ->where('order_goods.status', $request->status)
             ->where('order_goods.shipping_status', $request->shipping_status)
-            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.province', 'orders.city', 'orders.district', 'orders.address'])
-            ->get();
-        if(count($order_goods_list) == 0) return status(404, '找不到数据');
-        return status(200, 'success', $order_goods_list);
+            ->whereIn('order_goods.shipping_type', $shipping_type)
+            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.consignee', 'orders.phone', 'orders.province', 'orders.city', 'orders.district', 'orders.address', 'order_goods.consignee as goods_consignee', 'order_goods.phone as goods_phone', 'order_goods.province as goods_province', 'order_goods.city as goods_city', 'order_goods.district as goods_district', 'order_goods.address as goods_address', 'order_goods.shipping_type as goods_shipping_type']);
+        if(!empty($request->goods_sn)){
+            $order_goods_list->where('goods_sn', 'like', '%'.$request->goods_sn.'%');
+        }
+        if(!empty($request->phone)){
+            $order_goods_list->where('phone', 'like', '%'.$request->phone.'%');
+        }
+        if(!empty($request->consignee)){
+            $order_goods_list->where('order_goods.consignee', 'like', '%'.$request->consignee.'%');
+        }
+        $data = $order_goods_list->get();
+        if(count($data) == 0) return status(404, '找不到数据');
+        return status(200, 'success', $data);
     }
 
 
@@ -560,6 +573,7 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function staff_receive (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
         $order_goods = Order_good::where('shipping_status', 5)
             ->find($request->order_goods_id);
@@ -582,8 +596,34 @@ class LuxuryOrderController extends Controller
             $order_goods->district = $request->district;
             if(empty($request->address)) return status(40007, 'address参数有误');
             $order_goods->address = $request->address;
+            if(empty($request->consignee)) return status(40008, 'consignee参数有误');
+            $order_goods->consignee = $request->consignee;
+            if(empty($request->phone)) return status(40009, 'phone参数有误');
+            $order_goods->phone = $request->phone;
         }
         $order_goods->save();
+        $order_action = new Order_action();
+        $order_action->order_sn = $order_goods->order_sn;
+        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+        $order_action->order_status = 2;
+        $order_action->shipping_status = 3;
+        $order_action->pay_status = 3;
+        $order_action->action_note = $order_goods->goods_name.'物件洗护完工';
+        $order_action->save();
+        if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 1)->count() == 0){
+            $order = Order::where('order_sn', $order_goods->order_sn)->first();
+            $order->order_status = 3;
+            $order->shipping_status = 5;
+            $order->save();
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 3;
+            $order_action->shipping_status = 5;
+            $order_action->pay_status = 3;
+            $order_action->action_note = '所有物件洗护完工';
+            $order_action->save();
+        }
         return status(200, '操作成功');
     }
 
@@ -700,5 +740,129 @@ class LuxuryOrderController extends Controller
         }
         $goods['price_list'] = $price;
         return status(200, 'success', $goods);
+    }
+
+
+    /**
+     * 用户取件接口
+     *
+     */
+    public function user_take (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(empty($request->goods_id)) return status(40001, 'goods_id参数有误');
+        $order_goods = Order_good::where('status', 2)->whereIn('shipping_status', [5, 6])->whereIn('shipping_type', [1, 3])->find($request->goods_id);
+        if(empty($order_goods)) return status(404, '数据不存在');
+        $order_goods->status = 3;
+        $order_goods->shipping_status = 7;
+        $order_goods->save();
+        $order_action = new Order_action();
+        $order_action->order_sn = $order_goods->order_sn;
+        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+        $order_action->order_status = 2;
+        $order_action->shipping_status = 6;
+        $order_action->pay_status = 3;
+        $order_action->action_note = $order_goods['goods_name'].'物件已取走';
+        $order_action->save();
+        if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 3)->count() == 0){
+            $order = Order::where('order_sn', $order_goods->order_sn)->first();
+            $order->order_status = 4;
+            $order->shipping_status = 6;
+            $order->save();
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 4;
+            $order_action->shipping_status = 6;
+            $order_action->pay_status = 3;
+            $order_action->action_note = '订单完成';
+            $order_action->save();
+        }
+        return status(200, '操作成功');
+    }
+
+
+    /**
+     * 订单数量接口
+     *
+     */
+    public function order_number (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        // 同城上门未分配
+        $staff_order_visits = Order_visit::join('orders', 'order_visits.order_sn', '=', 'orders.order_sn')
+            ->where('order_visits.status', 1)
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('orders.order_status', 1)
+            ->where('orders.shipping_status', 1)
+            ->count();
+        // 同城上门已分配
+        $logistics_order_visits = Order_visit::join('orders', 'order_visits.order_sn', '=', 'orders.order_sn')
+            ->where('order_visits.status', 2)
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('orders.order_status', 1)
+            ->whereIn('orders.shipping_status', [1, 2, 3])
+            ->count();
+        // 员工待出库
+        $staff_send_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 1)
+            ->count();
+        // 物流从门店取货
+        $logistics_send_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 1)
+            ->count();
+        // 物流送往工厂
+        $logistics_delivery_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 2)
+            ->count();
+        // 工厂洗护中
+        $logistics_claim_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 3)
+            ->count();
+        // 物流送往门店
+        $logistics_remand_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 4)
+            ->count();
+        // 员工洗护到店
+        $staff_remand_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 1)
+            ->where('order_goods.shipping_status', 5)
+            ->count();
+        // 员工顾客代取
+        $staff_receive_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 2)
+            ->where('order_goods.shipping_status', 5)
+            ->where('order_goods.shipping_type', 1)
+            ->count();
+        // 物流上门送货
+        $logistics_receive_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', 2)
+            ->whereIn('order_goods.shipping_status', [6, 7])
+            ->where('order_goods.shipping_type', 3)
+            ->count();
+        $info = [
+            'staff_order_visits' => $staff_order_visits,
+            'logistics_order_visits' => $logistics_order_visits,
+            'staff_send_number' => $staff_send_number,
+            'logistics_send_number' => $logistics_send_number,
+            'logistics_delivery_number' => $logistics_delivery_number,
+            'logistics_claim_number' => $logistics_claim_number,
+            'logistics_remand_number' => $logistics_remand_number,
+            'staff_remand_number' => $staff_remand_number,
+            'staff_receive_number' => $staff_receive_number,
+            'logistics_receive_number' => $logistics_receive_number
+        ];
+        return status(200, 'success', $info);
     }
 }

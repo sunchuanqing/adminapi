@@ -69,6 +69,8 @@ Route::group(['namespace' => 'Api'], function ($route) {
             $route->post('order_info', 'LuxuryOrderController@order_info');// 订单详情
             $route->post('goods_list', 'LuxuryOrderController@goods_list');// 物件列表
             $route->post('goods_info', 'LuxuryOrderController@goods_info');// 物件详情
+            $route->post('user_take', 'LuxuryOrderController@user_take');// 上门自提取件
+            $route->post('order_number', 'LuxuryOrderController@order_number');// 订单数量
         });
     });
 
@@ -91,6 +93,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('add_user_money', 'UserController@add_user_money');// 会员充值
         $route->post('user_account', 'UserController@user_account');// 会员流水明细
         $route->post('shop_serve_user', 'UserController@shop_serve_user');// 会员已购的优惠套餐列表
+        $route->post('car_consume_record', 'UserController@car_consume_record');// 会员车辆消费记录
     });
 
     // 员工
@@ -109,5 +112,11 @@ Route::group(['namespace' => 'Api'], function ($route) {
     // 支付
     $route->group(['prefix' => 'pay', 'middleware' => 'login'], function ($route) {
         $route->post('pay_mode', 'PaymentController@pay_mode');// 支付方式列表
+    });
+
+
+    // 七牛token获取
+    $route->group(['prefix' => 'qiniu', 'middleware' => 'login'], function ($route) {
+        $route->post('token', 'QiniuTokenController@token');// 获取七牛token
     });
 });

@@ -476,4 +476,20 @@ class UserController extends Controller
         ];
         return status(200, 'success', $data);
     }
+
+
+    /**
+     * 会员车辆消费记录接口
+     *
+     */
+    public function car_consume_record (Request $request){
+        if(empty($request->car_id)) return status(40001, 'car_id参数有误');
+        $order = Order::where('user_car_id', $request->car_id)
+            ->with(['order_goods' => function($query){
+                $query->select(['order_sn', 'goods_name', 'status', 'make_price', 'goods_number']);
+            }])
+            ->select(['id', 'order_sn', 'created_at', 'order_amount'])
+            ->get();
+        return status(200, 'success', $order);
+    }
 }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\Admin;
+use App\Models\Admin_account;
 use App\Models\Coupon_user;
 use App\Models\Flower;
 use App\Models\Order;
@@ -743,6 +744,7 @@ class OrderController extends Controller
      * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
      */
     public function to_work (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         if(empty($request->id)) return status(40001, 'id参数有误');
         if(empty($request->work_id)) return status(40002, 'work_id参数有误');
         $order = Order_good::find($request->id);
@@ -751,6 +753,14 @@ class OrderController extends Controller
         $order->status = 5;
         $order->work_id = $request->work_id;
         $order->save();
+        $order_action = new Order_action();
+        $order_action->order_sn = $order->order_sn;
+        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+        $order_action->order_status = 2;
+        $order_action->shipping_status = 8;
+        $order_action->pay_status = 1;
+        $order_action->action_note = $order['goods_name'].' 项目开始施工';
+        $order_action->save();
         return status(200, '操作成功');
     }
 
@@ -766,18 +776,27 @@ class OrderController extends Controller
     public function work_ok (Request $request){
         if(empty($request->id)) return status(40001, 'id参数有误');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        $order = Order_good::find($request->id);
-        if($order->status != 5) return status(40002, '操作有误');
+        $order_goods = Order_good::find($request->id);
+        if(empty($order_goods)) return status(40002, '找不到数据');
+        if($order_goods->status != 5) return status(40003, '操作有误');
         if(!empty($request->work_id)){
-            if($order->work_id != $request->work_id){
-                $order->work_id = $request->work_id;
+            if($order_goods->work_id != $request->work_id){
+                $order_goods->work_id = $request->work_id;
             }
         }
-        $order->to_buyer = $request->to_buyer;
-        $order->status = 6;
-        $order->save();
-        if(Order_good::where('order_sn', $order->order_sn)->where('status', '!=', 6)->count() == 0){
-            $order = Order::where('order_sn', $order->order_sn)->first();
+        $order_goods->to_buyer = $request->to_buyer;
+        $order_goods->status = 6;
+        $order_goods->save();
+        $order_action = new Order_action();
+        $order_action->order_sn = $order_goods->order_sn;
+        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+        $order_action->order_status = 2;
+        $order_action->shipping_status = 8;
+        $order_action->pay_status = 1;
+        $order_action->action_note = $order_goods['goods_name'].' 项目施工完毕';
+        $order_action->save();
+        if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 6)->count() == 0){
+            $order = Order::where('order_sn', $order_goods->order_sn)->first();
             $order->order_status = 3;
             $order->save();
             $order_action = new Order_action();
@@ -786,7 +805,7 @@ class OrderController extends Controller
             $order_action->order_status = 3;
             $order_action->shipping_status = 8;
             $order_action->pay_status = 1;
-            $order_action->action_note = '员工施工完成';
+            $order_action->action_note = '订单施工完成';
             $order_action->save();
         }
         return status(200, '操作成功');
@@ -919,6 +938,43 @@ class OrderController extends Controller
             $order_action->pay_status = 3;
             $order_action->action_note = '客户支付完成，车辆已取走。';
             $order_action->save();
+            // 员工提成结算
+            $sell_admin = Admin::find($order['admin_id']);
+            $order_goods = Order_good::where('order_sn', $order['order_sn'])->get();
+            $sell_money = 0;
+            foreach ($order_goods as $k => $v){
+                $price_list = Price_list::where('price_sn', $v['goods_sn'])->first();
+                $sell_money = $sell_money+$price_list['sell_money']*$v['goods_number'];
+                if($v['work_id'] != null){
+                    $work_id = json_decode($v['work_id'], true);
+                    $job_money = round($price_list['job_money']/count($work_id), 2);
+                    foreach ($work_id as $ks => $vs){
+                        $job_admin = Admin::find($vs['admin_id']);
+                        $job_admin->admin_money = $job_admin->admin_money+$job_money;
+                        $job_admin->save();
+                        $admin_account = new Admin_account();
+                        $admin_account->admin_id = $vs['admin_id'];
+                        $admin_account->account_sn = sn_20();
+                        $admin_account->order_sn = $order['order_sn'];
+                        $admin_account->money_change = $job_money;
+                        $admin_account->money = $job_admin->admin_money;
+                        $admin_account->change_name = '开单、销售、施工提成';
+                        $admin_account->change_desc = $v['goods_name'].' 施工提成';
+                        $admin_account->save();
+                    }
+                }
+            }
+            $sell_admin->admin_money = $sell_admin->admin_money+$sell_money;
+            $sell_admin->save();
+            $admin_account = new Admin_account();
+            $admin_account->admin_id = $order['admin_id'];
+            $admin_account->account_sn = sn_20();
+            $admin_account->order_sn = $order['order_sn'];
+            $admin_account->money_change = $sell_money;
+            $admin_account->money = $sell_admin->admin_money;
+            $admin_account->change_name = '开单、销售、施工提成';
+            $admin_account->change_desc = '开单提成';
+            $admin_account->save();
             DB::commit();
             return status(200, '操作成功');
         } catch (QueryException $ex) {
