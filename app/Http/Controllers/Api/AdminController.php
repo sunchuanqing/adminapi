@@ -210,4 +210,90 @@ class AdminController extends Controller
             ->get();
         return status(200, 'success', $info);
     }
+
+
+    /**
+     * 发送短信验证码接口
+     *
+     */
+    public function send_code (Request $request){
+        if(empty($request->phone)) return status(40001, '手机号有误');
+        $phone = $request->phone;
+        $code = mt_rand(100000, 999999);
+        $info = json_decode(code_sn($phone, $code), true);
+        if($info['error'] == 0){
+            Redis::setex('code_'.$phone, 1200, $code);// redis存入验证码
+            return status(200, '发送成功');
+        }else{
+            return $info;
+        }
+    }
+
+
+    /**
+     * 验证短信验证码接口
+     *
+     */
+    public function verify_code (Request $request){
+        if(empty($request->phone)) return status(40001, '手机号有误');
+        if(empty($request->code)) return status(40002, '验证码必填');
+        $code = Redis::get('code_'.$request->phone);
+        if($code == $request->code){
+            Redis::del('code_'.$request->phone);// 杀死之前发送的验证码
+            return status(200, '验证成功');
+        }else{
+            return status(40003, '验证失败');
+        }
+    }
+
+
+    /**
+     * 更换绑定手机号接口
+     *
+     */
+    public function phone_update (Request $request){
+        if(empty($request->phone)) return status(40001, '手机号有误');
+        if(empty($request->code)) return status(40002, '验证码必填');
+        $code = Redis::get('code_'.$request->phone);
+        if($code == $request->code){
+            Redis::del('code_'.$request->phone);// 杀死之前发送的验证码
+            // 修改手机号
+            if(empty($request->admin_id)) return status(40003, 'admin_id参数有误');
+            $admin = Admin::find($request->admin_id);
+            if(empty($admin)) return status(404, '账号不存在');
+            if(empty(Admin::where('phone', $request->phone)->count() == 0)){
+                $admin->phone = $request->phone;
+                $admin->save();
+                return status(200, '绑定成功');
+            }else{
+                return status(40004, '此手机号已存在');
+            }
+        }else{
+            return status(40003, '验证码有误');
+        }
+    }
+
+
+    /**
+     * 忘记密码修改密码接口
+     *
+     */
+    public function password_update (Request $request){
+        if(empty($request->phone)) return status(40001, 'phone参数有误');
+        $admin = Admin::where('phone', $request->phone)->first();
+        if(empty($admin)) return status(404, '信息不存在');
+        if(empty($request->password)) return status(40002, 'password参数有误');
+        if(empty($request->old_password)){
+            $password = MD5($request->password);
+        }else{
+            if($admin['password'] == MD5($request->old_password)){
+                $password = MD5($request->password);
+            }else{
+                return status(40003, '原密码不正确');
+            }
+        }
+        $admin->password = $password;
+        $admin->save();
+        return status(200, '修改成功');
+    }
 }

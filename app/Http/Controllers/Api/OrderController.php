@@ -372,6 +372,31 @@ class OrderController extends Controller
 
 
     /**
+     * 花艺订单查询接口
+     *
+     */
+    public function flower_order (Request $request){
+        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(!empty($request->time)){
+            $time = $request->time;
+        }else{
+            $time = date("Y-m-d", time());
+        }
+        $order = Order::where('created_at', 'like', '%'.$time.'%')
+            ->where('shop_id', $admin['shop_id'])
+            ->select(['id', 'order_sn', 'created_at', 'consignee', 'phone', 'best_time']);
+        if(!empty($request->order_sn)){
+            $order->where('order_sn', 'like', '%'.$request->order_sn.'%');
+        }
+        if(!empty($request->phone)){
+            $order->where('phone', 'like', '%'.$request->phone.'%');
+        }
+        $data = $order->get();
+        return status(200, 'success', $data);
+    }
+
+
+    /**
      * 花束列表接口
      *
      * 花艺开单需要选择花束

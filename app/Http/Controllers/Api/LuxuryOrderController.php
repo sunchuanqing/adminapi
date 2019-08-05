@@ -789,7 +789,7 @@ class LuxuryOrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         // 同城上门未分配
         $staff_order_visits = Order_visit::join('orders', 'order_visits.order_sn', '=', 'orders.order_sn')
-            ->where('order_visits.status', 1)
+            ->whereIn('order_visits.status', [1, 2])
             ->where('orders.shop_id', $admin['shop_id'])
             ->where('orders.order_status', 1)
             ->where('orders.shipping_status', 1)

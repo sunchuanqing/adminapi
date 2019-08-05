@@ -95,3 +95,23 @@ function user_error_log ($log_info){
     $user_log->ip_address = $_SERVER["REMOTE_ADDR"];
     $user_log->save();
 }
+
+function code_sn ($phone, $code){
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "http://sms-api.luosimao.com/v1/send.json");
+
+    curl_setopt($ch, CURLOPT_HTTP_VERSION  , CURL_HTTP_VERSION_1_0 );
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
+    curl_setopt($ch, CURLOPT_HEADER, FALSE);
+
+    curl_setopt($ch, CURLOPT_HTTPAUTH , CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD  , 'api:key-874d539f9686ff31bcec4987fc0e8698');
+
+    curl_setopt($ch, CURLOPT_POST, TRUE);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, array('mobile' => $phone, 'message' => '本次操作验证码为：'.$code.'，请在20分钟内使用。（请确保是本人操作且为本人手机，否则请忽略此短信）【MISS LUSSO】'));
+
+    $res = curl_exec( $ch );
+    curl_close( $ch );
+    return $res;
+}

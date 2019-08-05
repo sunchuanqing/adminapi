@@ -27,6 +27,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('done_order', 'OrderController@done_order');// 订单制作完成
         $route->post('send_order', 'OrderController@send_order');// 订单送出
         $route->post('add_flower_order', 'OrderController@add_flower_order');// 花艺开单
+        $route->post('flower_order', 'OrderController@flower_order');// 花艺订单查询
         $route->post('flower_list', 'OrderController@flower_list');// 花束列表
         $route->post('today_order', 'OrderController@today_order');// 今日代办
         $route->post('add_car_order', 'OrderController@add_car_order');// 车护开单
@@ -107,6 +108,8 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('update_password', 'AdminController@update_password');// 修改密码
         $route->post('statistics', 'AdminController@statistics');// 统计
         $route->post('master_worker', 'AdminController@master_worker');// 师傅列表
+        $route->post('phone_update', 'AdminController@phone_update');// 修改手机号
+        $route->post('password_update', 'AdminController@password_update');// 修改手机号
     });
 
     // 支付
@@ -118,5 +121,11 @@ Route::group(['namespace' => 'Api'], function ($route) {
     // 七牛token获取
     $route->group(['prefix' => 'qiniu', 'middleware' => 'login'], function ($route) {
         $route->post('token', 'QiniuTokenController@token');// 获取七牛token
+    });
+
+    // 验证码
+    $route->group(['prefix' => 'code'], function ($route) {
+        $route->post('send_code', 'AdminController@send_code');// 获取验证码
+        $route->post('verify_code', 'AdminController@verify_code');// 验证验证码
     });
 });
