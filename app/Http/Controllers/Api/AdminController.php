@@ -255,13 +255,12 @@ class AdminController extends Controller
         if(empty($request->phone)) return status(40001, '手机号有误');
         if(empty($request->code)) return status(40002, '验证码必填');
         $code = Redis::get('code_'.$request->phone);
-        if($code == $request->code){
+        if($code != $request->code){
             Redis::del('code_'.$request->phone);// 杀死之前发送的验证码
             // 修改手机号
-            if(empty($request->admin_id)) return status(40003, 'admin_id参数有误');
-            $admin = Admin::find($request->admin_id);
-            if(empty($admin)) return status(404, '账号不存在');
-            if(empty(Admin::where('phone', $request->phone)->count() == 0)){
+            $admin_id = json_decode(Redis::get('admin_token_'.$request->token), true);
+            $admin = Admin::find($admin_id['id']);
+            if(Admin::where('phone', $request->phone)->count() == 0){
                 $admin->phone = $request->phone;
                 $admin->save();
                 return status(200, '绑定成功');
@@ -283,15 +282,7 @@ class AdminController extends Controller
         $admin = Admin::where('phone', $request->phone)->first();
         if(empty($admin)) return status(404, '信息不存在');
         if(empty($request->password)) return status(40002, 'password参数有误');
-        if(empty($request->old_password)){
-            $password = MD5($request->password);
-        }else{
-            if($admin['password'] == MD5($request->old_password)){
-                $password = MD5($request->password);
-            }else{
-                return status(40003, '原密码不正确');
-            }
-        }
+        $password = MD5($request->password);
         $admin->password = $password;
         $admin->save();
         return status(200, '修改成功');

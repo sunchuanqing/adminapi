@@ -109,7 +109,6 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('statistics', 'AdminController@statistics');// 统计
         $route->post('master_worker', 'AdminController@master_worker');// 师傅列表
         $route->post('phone_update', 'AdminController@phone_update');// 修改手机号
-        $route->post('password_update', 'AdminController@password_update');// 修改手机号
     });
 
     // 支付
@@ -127,5 +126,6 @@ Route::group(['namespace' => 'Api'], function ($route) {
     $route->group(['prefix' => 'code'], function ($route) {
         $route->post('send_code', 'AdminController@send_code');// 获取验证码
         $route->post('verify_code', 'AdminController@verify_code');// 验证验证码
+        $route->post('password_update', 'AdminController@password_update');// 忘记密码
     });
 });
