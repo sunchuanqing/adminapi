@@ -128,4 +128,9 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('verify_code', 'AdminController@verify_code');// 验证验证码
         $route->post('password_update', 'AdminController@password_update');// 忘记密码
     });
+
+    // 消息推送
+    $route->post('notified_push', 'NotifiedController@notified_push');// 忘记密码
+    $route->post('test', 'AdminController@test');// 忘记密码
+    $route->post('version_detection', 'AdminController@version_detection');// 忘记密码
 });

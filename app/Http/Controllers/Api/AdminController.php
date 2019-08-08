@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\Admin;
 use App\Models\Admin_role;
+use App\Models\App_version;
 use App\Models\Order;
 use App\Models\Recharge_balance;
 use App\Models\User_account;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Redis;
+use App\Http\Controllers\Api\NotifiedController;
 
 class AdminController extends Controller
 {
@@ -286,5 +288,31 @@ class AdminController extends Controller
         $admin->password = $password;
         $admin->save();
         return status(200, '修改成功');
+    }
+
+
+    public function test (Request $request){
+        $test = new NotifiedController();
+        $request->offsetSet('title', '这里是一个标题');
+        $request->offsetSet('text', '这里是展示的内容');
+        $admin = Admin::whereIn('id', [17])->get();
+        $request->offsetSet('admin', $admin);
+        $info = $test->notified_push($request);
+        return $info;
+    }
+
+
+    /**
+     * 检测版本更新接口接口
+     *
+     */
+    public function version_detection (Request $request){
+        if(empty($request->version_number)) return status(40001, 'version_number参数有误');
+        $app_version = App_version::OrderBy('id', 'desc')->select(['id', 'version_number', 'version_info', 'version_url'])->first();
+        if($request->version_number == $app_version['version_number']){
+            return status(404, '没有新版本');
+        }else{
+            return status(200, 'success', $app_version);
+        }
     }
 }

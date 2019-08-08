@@ -54,6 +54,8 @@ class AuthController extends Controller
             $update_admin = Admin::find($admin['id']);// 更新最后登录信息
             $update_admin->last_ip = $_SERVER["REMOTE_ADDR"];
             $update_admin->last_time = $last_time;
+//            if(empty($request->cid)) return status(40005, 'cid参数有误');
+            $update_admin->cid = $request->cid;
             $update_admin->token = $key;
             $update_admin->save();
             return status(200, 'success', $admin);
