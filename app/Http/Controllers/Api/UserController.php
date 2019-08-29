@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\Coupon_user;
 use App\Models\Order;
+use App\Models\Payment;
 use App\Models\Price_list_user;
 use App\Models\Recharge_balance;
 use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_address;
 use App\Models\User_car;
+use App\Models\User_pay_point;
 use App\Models\User_rank;
 use App\User;
 use Illuminate\Http\Request;
@@ -58,7 +60,7 @@ class UserController extends Controller
             $user->phone = $request->phone;
             $user->user_rank_id = $request->user_rank_id;
             $user->sex = $request->sex;
-            $user->photo = 'http://img.jiaranjituan.cn/photo.jpg';
+            $user->photo = 'http://img.jiaranjituan.cn/photo.png';
             $user->source_msg = $admin['shop_name'];
             $user->source_shop_id = $admin['shop_id'];
             $user->save();
@@ -173,9 +175,6 @@ class UserController extends Controller
         if(empty($request->car_province)) return status(40002, 'car_province参数有误');
         if(empty($request->car_city)) return status(40003, 'car_city参数有误');
         if(empty($request->car_number)) return status(40004, 'car_number参数有误');
-        if(empty($request->car_info)) return status(40005, 'car_info参数有误');
-        if(empty($request->car_colour)) return status(40006, 'car_colour参数有误');
-        if(empty($request->car_type)) return status(40007, 'car_type参数有误');
         $user_car = User_car::find($request->id);
         if(empty($user_car)) return status(404, '车辆不存在');
         if($user_car->plate_number != $request->car_province.$request->car_city.$request->car_number){
@@ -368,17 +367,43 @@ class UserController extends Controller
     /**
      * 会员充值接口
      *
+     * money_type  1定额充值  2其他充值
      */
     public function add_user_money (Request $request){
         if(empty($request->user_id)) return status(40001, 'user_id参数不正确');
         if(empty($request->money)) return status(40002, 'money参数不正确');
         if(empty($request->pay_type)) return status(40003, 'pay_type参数不正确');
+        if(empty($request->money_type)) return status(40004, 'money_type参数不正确');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         DB::beginTransaction();
         try {
             // 1.添加用户余额
             $user = User::find($request->user_id);
-            $user->user_money = $user->user_money+$request->money;
+            $pay_points = 0;// 赠送积分
+            $give_money = 0;// 赠送金额
+            if($request->money_type == 1){
+                if($request->money == 3000){
+                    $pay_points = 1500;
+                    $give_money = 300;
+                }else if($request->money == 5000){
+                    $pay_points = 2500;
+                    $give_money = 1000;
+                }else if($request->money == 10000){
+                    $pay_points = 5000;
+                    $give_money = 3000;
+                }else if($request->money == 20000){
+                    $pay_points = 10000;
+                    $give_money = 8000;
+                }else if($request->money == 30000){
+                    $pay_points = 20000;
+                    $give_money = 15000;
+                }
+            }
+            $user->user_money = $user->user_money+$request->money+$give_money;
+            $user->pay_points = $user->pay_points+$pay_points;
+            if($user->rank_id != 4){// 会员类型  若果不是年卡  改变为充值会员
+                $user->rank_id = 3;
+            }
             $user->save();
             // 2.充值表记录数据
             $recharge_sn = sn_26();
@@ -392,16 +417,25 @@ class UserController extends Controller
             $recharge_balance->admin_id = $admin['id'];
             $recharge_balance->shop_id = $admin['shop_id'];
             $recharge_balance->save();
-            // 2.记录流水
+            // 3.赠送积分
+            $user_pay_point = new User_pay_point();
+            $user_pay_point->user_id = $user->id;
+            $user_pay_point->change_name = '充值赠送';
+            $user_pay_point->point_change = $pay_points;
+            $user_pay_point->point = $user->pay_points;
+            $user_pay_point->change_msg = '充值赠送积分';
+            $user_pay_point->save();
+            // 4.记录流水
+            $pay = Payment::find($request->pay_type);
             $user_account = new User_account();
             $user_account->account_sn = sn_20();
             $user_account->recharge_sn = $recharge_sn;
             $user_account->user_id = $request->user_id;
             $user_account->money_change = $request->money;
             $user_account->money = $user['user_money'];
-            $user_account->change_name = '余额充值';
+            $user_account->change_name = $pay->pay_name.'支付';
             if(empty($request->change_desc)) {
-                $user_account->change_desc = '余额充值';
+                $user_account->change_desc = '工作人员充值（含赠送金额：'.$give_money.'元）';
             }else{
                 $user_account->change_desc = $request->change_desc;
             }
@@ -425,18 +459,28 @@ class UserController extends Controller
      * 排序：1倒序 2正序   time
      */
     public function user_account (Request $request){
+        if(empty($request->page)) return status(40001, 'page参数有误');
+        $page = $request->page;// 页数
+        $limit = 10;// 每页显示的条数
+        $num = ($page-1)*$limit;// 跳过多少条
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $user_account = User_account::where('shop_id', $admin['shop_id'])
             ->join('users', 'user_accounts.user_id', '=', 'users.id')
-            ->select(['user_accounts.account_sn', 'user_accounts.money_change', 'user_accounts.change_desc', 'user_accounts.recharge_sn', 'users.user_name', 'users.phone'])
+            ->select(['user_accounts.id', 'user_accounts.account_sn', 'user_accounts.money_change', 'user_accounts.change_desc', 'user_accounts.recharge_sn', 'users.user_name', 'users.phone'])
             ->with(['recharge_balance' => function($query){
                 $query->join('admins', 'recharge_balances.admin_id', '=', 'admins.id');
                 $query->select('recharge_balances.recharge_sn', 'recharge_balances.admin_id', 'admins.name');
-            }]);
+            }])
+            ->offset($num)
+            ->limit($limit);
         if($request->status == 1){
             $user_account->where('recharge_sn', '!=', null);
+            $count = User_account::where('shop_id', $admin['shop_id'])->where('recharge_sn', '!=', null)->count();
         }else if($request->status == 2){
             $user_account->where('recharge_sn', '=', null);
+            $count = User_account::where('shop_id', $admin['shop_id'])->where('recharge_sn', '=', null)->count();
+        }else{
+            $count = User_account::where('shop_id', $admin['shop_id'])->count();
         }
         if($request->time == 1){
             $user_account->orderBy('user_accounts.id', 'desc');
@@ -446,7 +490,37 @@ class UserController extends Controller
             $user_account->orderBy('user_accounts.id', 'desc');
         }
         if(count($user_account->get()) == 0) return status(404, '没有数据');
-        return status(200, 'success', $user_account->get());
+        $info = [
+            'current_page' => $page,
+            'count' => $count,
+            'page_count' => $limit,
+            'data' => $user_account->get()
+        ];
+        return status(200, 'success', $info);
+    }
+
+
+
+    /**
+     * 用户流水明细详情接口
+     *
+     * 状态：1充值 2消费   status
+     * 排序：1倒序 2正序   time
+     */
+    public function user_account_info (Request $request){
+        if(empty($request->account_id)) return status(40001, 'account_id参数有误');
+        $user_account = User_account::join('users', 'user_accounts.user_id', '=', 'users.id')
+            ->join('user_ranks', 'users.rank_id', '=', 'user_ranks.id')
+            ->select(['user_accounts.id', 'user_accounts.account_sn', 'user_accounts.order_sn', 'user_accounts.money_change', 'user_accounts.change_name', 'user_accounts.change_desc', 'user_accounts.recharge_sn', 'users.user_sn', 'users.user_name', 'users.sex', 'users.phone', 'users.user_money', 'user_ranks.name'])
+            ->with(['recharge_balance' => function($query){
+                $query->join('admins', 'recharge_balances.admin_id', '=', 'admins.id');
+                $query->select('recharge_balances.recharge_sn', 'recharge_balances.money', 'recharge_balances.admin_id', 'admins.name');
+            }])
+            ->with(['order' => function($query){
+                $query->select('id', 'order_sn', 'goods_amount');
+            }])
+            ->find($request->account_id);
+        return status(200, 'success', $user_account);
     }
 
 
@@ -464,11 +538,11 @@ class UserController extends Controller
             ->where('shop_serves.shop_id', $admin['shop_id'])
             ->select(['shop_serve_users.user_serve_sn', 'shop_serves.serve_name', 'shop_serves.shop_price', 'shop_serves.serve_item'])
             ->get();
-        $price_list_user = Price_list_user::where('user_id', $request->user_id)
+        $price_list_user = Price_list_user::where('price_list_users.user_id', $request->user_id)
             ->where('shop_id', $admin['shop_id'])
             ->where('status', 1)
             ->where('pay_status', 3)
-            ->select(['price_list_sn', 'price_list_name', 'price_list_money'])
+            ->select(['price_list_id', 'price_list_sn', 'price_list_name', 'price_list_money'])
             ->get();
         $data = [
             'shop_serve_user' => $shop_serve_user,
@@ -488,8 +562,15 @@ class UserController extends Controller
             ->with(['order_goods' => function($query){
                 $query->select(['order_sn', 'goods_name', 'status', 'make_price', 'goods_number']);
             }])
-            ->select(['id', 'order_sn', 'created_at', 'order_amount'])
-            ->get();
-        return status(200, 'success', $order);
+            ->select(['id', 'order_sn', 'created_at', 'order_amount']);
+        if(!empty($request->time)){
+            $order->where('created_at', 'like', '%'.$request->time.'%');
+        }
+        if(!empty($request->order_sn)){
+            $order->where('order_sn', 'like', '%'.$request->order_sn.'%');
+        }
+        $info = $order->get();
+        if(count($info) == 0) return status(404, '没有数据');
+        return status(200, 'success', $info);
     }
 }

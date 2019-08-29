@@ -70,6 +70,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
             $route->post('order_info', 'LuxuryOrderController@order_info');// 订单详情
             $route->post('goods_list', 'LuxuryOrderController@goods_list');// 物件列表
             $route->post('goods_info', 'LuxuryOrderController@goods_info');// 物件详情
+            $route->post('logistics_take', 'LuxuryOrderController@logistics_take');// 物流送货上门从门店取货
             $route->post('user_take', 'LuxuryOrderController@user_take');// 上门自提取件
             $route->post('order_number', 'LuxuryOrderController@order_number');// 订单数量
         });
@@ -93,6 +94,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('user_coupon', 'UserController@user_coupon');// 会员可用优惠券信息
         $route->post('add_user_money', 'UserController@add_user_money');// 会员充值
         $route->post('user_account', 'UserController@user_account');// 会员流水明细
+        $route->post('user_account_info', 'UserController@user_account_info');// 会员流水明细
         $route->post('shop_serve_user', 'UserController@shop_serve_user');// 会员已购的优惠套餐列表
         $route->post('car_consume_record', 'UserController@car_consume_record');// 会员车辆消费记录
     });
@@ -109,6 +111,10 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('statistics', 'AdminController@statistics');// 统计
         $route->post('master_worker', 'AdminController@master_worker');// 师傅列表
         $route->post('phone_update', 'AdminController@phone_update');// 修改手机号
+        $route->post('message_list', 'AdminController@message_list');// 今日消息列表
+        $route->post('old_message_list', 'AdminController@old_message_list');// 历史消息列表
+        $route->post('admin_statistics', 'AdminController@admin_statistics');// 管理员模块统计
+        $route->post('user_account', 'AdminController@user_account');// 管理员模块用户流水统计
     });
 
     // 支付
@@ -131,6 +137,6 @@ Route::group(['namespace' => 'Api'], function ($route) {
 
     // 消息推送
     $route->post('notified_push', 'NotifiedController@notified_push');// 忘记密码
-    $route->post('test', 'AdminController@test');// 忘记密码
+    $route->post('test', 'AdminController@test');// 消息推送测试
     $route->post('version_detection', 'AdminController@version_detection');// 忘记密码
 });

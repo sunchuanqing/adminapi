@@ -18,6 +18,7 @@ use App\Models\Shop_serve;
 use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_car;
+use App\Models\User_pay_point;
 use App\User;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
@@ -54,6 +55,10 @@ class OrderController extends Controller
             }])
             ->orderBy('id', 'desc')
             ->select(['id', 'order_sn', 'consignee', 'phone', 'best_time', 'created_at', 'postscript']);
+        if(!empty($request->shipping_status)) {
+            $shipping_status = json_decode($request->shipping_status, true);
+            $order_list->whereIn('shipping_status', $shipping_status);
+        };
         if(!empty($request->where_key)){// 判断是否筛选
             if(empty($request->where_value)) return status(40004, 'where_value参数有误');
             $order_list->where($request->where_key, 'like', '%'.request('where_value').'%');
@@ -334,19 +339,24 @@ class OrderController extends Controller
                 $coupon_melt->save();
             }
             // 7.判断是否为余额支付 是 扣卡
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->order_sn = $order_sn;
+            $user_account->user_id = $user['id'];
+            $user_account->shop_id = $admin['shop_id'];
+            $user_account->money_change = -$order->order_amount;
+            $user_account->money = $user->user_money;
             if($request->pay_id == 1){
                 if($user['user_money'] < $order->order_amount) return status(40006, '余额不足');
                 $user->user_money = $user['user_money']-$order->order_amount;
                 $user->save();
-                $user_account = new User_account();
-                $user_account->account_sn = sn_20();
-                $user_account->order_sn = $order_sn;
-                $user_account->user_id = $user['id'];
-                $user_account->shop_id = $admin['shop_id'];
-                $user_account->money_change = -$order->order_amount;
-                $user_account->money = $user->user_money;
-                $user_account->change_name = '订单支付';
-                $user_account->change_desc = '门店员工开单，自动扣除会员卡金额。';
+                $user_account->change_name = '余额支付';
+                $user_account->change_desc = '花艺门店开单 选择账户余额付款';
+                $user_account->save();
+            }else{
+                $user_account->change_name = Payment::find($request->pay_id)->pay_name.'支付';
+                $user_account->change_desc = '花艺支付成功（不计入用户账户流水）';
+                $user_account->type = 2;
                 $user_account->save();
             }
             // 8.写入订单操作状态
@@ -383,6 +393,7 @@ class OrderController extends Controller
             $time = date("Y-m-d", time());
         }
         $order = Order::where('created_at', 'like', '%'.$time.'%')
+            ->OrderBy('id', 'desc')
             ->where('shop_id', $admin['shop_id'])
             ->select(['id', 'order_sn', 'created_at', 'consignee', 'phone', 'best_time']);
         if(!empty($request->order_sn)){
@@ -902,6 +913,7 @@ class OrderController extends Controller
      * 车护订单入账接口
      *
      * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
+     * type 1代表会员账户  2其他
      */
     public function tally_order (Request $request){
         if(empty($request->id)) return status(40001, 'id参数有误');
@@ -937,21 +949,27 @@ class OrderController extends Controller
             $order->done_time = date('Y-m-d H:i:s', time());
             $order->save();
             // 余额付款扣卡
+            $user = User::find($order['user_id']);
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->order_sn = $order->order_sn;
+            $user_account->user_id = $order->user_id;
+            $user_account->money_change = -$order->order_amount;
+            $user_account->change_name = $pay->pay_name.'支付';
+            $user_account->shop_id = $admin['shop_id'];
             if($request->pay_id ==1){
-                $user = User::find($order['user_id']);
                 if($user->user_money < $order->order_amount) return status(40004, '账户余额不足');
                 $user->user_money = $user->user_money-$order->order_amount;
                 $user->save();
                 // 记录余额交易流水
-                $user_account = new User_account();
-                $user_account->account_sn = sn_20();
-                $user_account->order_sn = $order->order_sn;
-                $user_account->user_id = $order->user_id;
-                $user_account->money_change = -$order->order_amount;
                 $user_account->money = $user->user_money;
-                $user_account->change_name = '订单支付';
-                $user_account->change_desc = '余额主动扣卡';
-                $user_account->shop_id = $admin['shop_id'];
+                $user_account->change_desc = '名车护理账户余额支付成功';
+                $user_account->save();
+            }else{
+                // 记录余额交易流水
+                $user_account->money = $user->user_money;
+                $user_account->change_desc = '名车护理支付成功（不计入用户账户流水）';
+                $user_account->type = 2;// 记录其他付款
                 $user_account->save();
             }
             // 记录订单操作
@@ -1040,7 +1058,6 @@ class OrderController extends Controller
     /**
      * 购买服务接口
      *
-     * 洗护状态：1洗护中 2待收货 3已收货 4待施工 5施工中 6已完工   ststus
      * 服务类别：1套餐 2价目表
      */
     public function add_serve_order (Request $request){
@@ -1109,23 +1126,40 @@ class OrderController extends Controller
             $order_goods->attr_name = '门店服务';
             $order_goods->save();
             // 3.如果是余额支付 自动扣卡
-            if($request->pay_id ==1){
-                if($user->user_money < $request->order_amount) return status(40004, '账户余额不足');
-                $user->user_money = $user->user_money-$request->order_amount;
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->order_sn = $order_sn;
+            $user_account->user_id = $user['id'];
+            $user_account->shop_id = $admin['shop_id'];
+            $user_account->money_change = -$order->order_amount;
+            $user_account->money = $user->user_money;
+            if($request->pay_id == 1){
+                if($user['user_money'] < $order->order_amount) return status(40006, '余额不足');
+                $user->user_money = $user['user_money']-$order->order_amount;
                 $user->save();
-                // 记录余额交易流水
-                $user_account = new User_account();
-                $user_account->account_sn = sn_20();
-                $user_account->order_sn = $order_sn;
-                $user_account->user_id = $user['id'];
-                $user_account->money_change = -$request->order_amount;
-                $user_account->money = $user->user_money;
-                $user_account->change_name = '订单支付';
-                $user_account->change_desc = '余额主动扣卡';
-                $user_account->shop_id = $admin['shop_id'];
+                $user_account->change_name = '余额支付';
+                $user_account->change_desc = '购买服务 选择账户余额付款';
+                $user_account->save();
+            }else{
+                $user_account->change_name = Payment::find($request->pay_id)->pay_name.'支付';
+                $user_account->change_desc = '购买服务支付成功（不计入用户账户流水）';
+                $user_account->type = 2;
                 $user_account->save();
             }
-            // 4.商品写入用户账户
+            // 4.赠送消费积分
+            if($request->pay_id != 6){
+                $pay_points = floor($request->order_amount*0.05);
+                $user->pay_points = $user->pay_points+$pay_points;
+                $user->save();
+                $user_pay_point = new User_pay_point();
+                $user_pay_point->user_id = $user->id;
+                $user_pay_point->change_name = '消费赠送';
+                $user_pay_point->point_change = $pay_points;
+                $user_pay_point->point = $user->pay_points;
+                $user_pay_point->change_msg = '消费赠送积分';
+                $user_pay_point->save();
+            }
+            // 5.商品写入用户账户
             if($request->serve_type == 1){
                 for ($i = 1; $i <= $request->number; $i++){
                     $shop_serve_user = new Shop_serve_user();

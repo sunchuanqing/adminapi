@@ -11,4 +11,11 @@ class User_account extends Model
     {
         return $this->hasOne('App\Models\Recharge_balance', 'recharge_sn', 'recharge_sn');
     }
+
+
+    // 一对一关联 订单信息
+    public function order()
+    {
+        return $this->hasOne('App\Models\Order', 'order_sn', 'order_sn');
+    }
 }

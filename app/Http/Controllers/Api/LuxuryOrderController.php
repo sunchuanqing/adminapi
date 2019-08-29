@@ -34,11 +34,12 @@ class LuxuryOrderController extends Controller
         if(empty($request->status)) return status(40003, 'status参数有误');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $order = Order::join('order_visits', 'orders.order_sn', '=', 'order_visits.order_sn')
+            ->join('shops', 'shops.id', '=', 'orders.shop_id')
             ->where('shop_id', $admin['shop_id'])
             ->where('order_status', $request->order_status)
             ->whereIn('shipping_status', $shipping_status)
             ->where('order_visits.status', $request->status)
-            ->select(['orders.id', 'orders.consignee', 'orders.phone', 'orders.shipping_status', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id'])
+            ->select(['orders.id', 'orders.consignee', 'orders.phone', 'orders.shop_id', 'orders.shipping_status', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id', 'shops.shop_phone'])
             ->orderBy('id', 'desc');
         if(!empty($request->name)) {
             $order->where('orders.consignee', 'like', '%'.$request->name.'%');
@@ -206,7 +207,7 @@ class LuxuryOrderController extends Controller
             $order_visit->number = $request->number;
             $order_visit->user_name = $request->user_name;
             $order_visit->phone = $request->phone;
-            $order_visit->status = 1;
+            $order_visit->status = 2;
             $order_visit->save();
             DB::commit();
             return status(200, 'success', ['order_sn' => $order_sn]);
@@ -316,20 +317,25 @@ class LuxuryOrderController extends Controller
             $order->postscript = $request->postscript;
             $order->save();
             // 2.判断支付方式为余额 自动扣卡
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->order_sn = $order->order_sn;
+            $user_account->user_id = $order->user_id;
+            $user_account->money_change = -$order->order_amount;
+            $user_account->money = $user->user_money;
+            $user_account->shop_id = $admin['shop_id'];
             if($request->pay_id ==1){
                 if($user->user_money < $order->order_amount) return status(40011, '账户余额不足');
                 $user->user_money = $user->user_money-$order->order_amount;
                 $user->save();
                 // 记录余额交易流水
-                $user_account = new User_account();
-                $user_account->account_sn = sn_20();
-                $user_account->order_sn = $order->order_sn;
-                $user_account->user_id = $order->user_id;
-                $user_account->money_change = -$order->order_amount;
-                $user_account->money = $user->user_money;
-                $user_account->change_name = '订单支付';
-                $user_account->change_desc = '余额主动扣卡';
-                $user_account->shop_id = $admin['shop_id'];
+                $user_account->change_name = '余额支付';
+                $user_account->change_desc = '奢护门店开单 选择账户余额付款';
+                $user_account->save();
+            }else{
+                $user_account->change_name = $pay['pay_name'].'订单支付';
+                $user_account->change_desc = '奢护支付成功（不计入用户账户流水）';
+                $user_account->type = 2;
                 $user_account->save();
             }
             // 3.写入订单商品表
@@ -337,7 +343,7 @@ class LuxuryOrderController extends Controller
             // 4.写入订单操作状态
             $order_action = new Order_action();
             $order_action->order_sn = $order_sn;
-            $order_action->action_user = '员工';
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
             $order_action->order_status = 2;
             $order_action->shipping_status = 3;
             $order_action->pay_status = 3;
@@ -465,6 +471,7 @@ class LuxuryOrderController extends Controller
             ->where('order_goods.status', $request->status)
             ->where('order_goods.shipping_status', $request->shipping_status)
             ->whereIn('order_goods.shipping_type', $shipping_type)
+            ->orderBy('id', 'desc')
             ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.consignee', 'orders.phone', 'orders.province', 'orders.city', 'orders.district', 'orders.address', 'order_goods.consignee as goods_consignee', 'order_goods.phone as goods_phone', 'order_goods.province as goods_province', 'order_goods.city as goods_city', 'order_goods.district as goods_district', 'order_goods.address as goods_address', 'order_goods.shipping_type as goods_shipping_type']);
         if(!empty($request->goods_sn)){
             $order_goods_list->where('goods_sn', 'like', '%'.$request->goods_sn.'%');
@@ -505,13 +512,34 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function logistics_send (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods_id = json_decode($request->order_goods_id, true);
-        $order_goods = Order_good::whereIn('id', $order_goods_id)
-            ->where('shipping_status', 1)
-            ->update(['shipping_status' => 2, 'logistics_type' => 1]);
-        if($order_goods == 0) return status(40002, '操作失败');
-        return status(200, '操作成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods_id = json_decode($request->order_goods_id, true);
+            $order_goods = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 1)
+                ->update(['shipping_status' => 2, 'logistics_type' => 1]);
+            if($order_goods == 0) return status(40002, '操作失败');
+            $order_goods_action = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 2)
+                ->get();
+            foreach ($order_goods_action as $k => $v){
+                $order_action = new Order_action();
+                $order_action->order_sn = $v['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '物流师傅从门店取走物件（物件：'.$v['goods_name'].'）';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 
 
@@ -522,13 +550,34 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function logistics_delivery (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods_id = json_decode($request->order_goods_id, true);
-        $order_goods = Order_good::whereIn('id', $order_goods_id)
-            ->where('shipping_status', 2)
-            ->update(['shipping_status' => 3]);
-        if($order_goods == 0) return status(40002, '操作失败');
-        return status(200, '操作成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods_id = json_decode($request->order_goods_id, true);
+            $order_goods = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 2)
+                ->update(['shipping_status' => 3]);
+            if($order_goods == 0) return status(40002, '操作失败');
+            $order_goods_action = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 3)
+                ->get();
+            foreach ($order_goods_action as $k => $v){
+                $order_action = new Order_action();
+                $order_action->order_sn = $v['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '物流师傅已把物件送至工厂（物件：'.$v['goods_name'].'）';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 
 
@@ -539,13 +588,34 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function logistics_claim (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods_id = json_decode($request->order_goods_id, true);
-        $order_goods = Order_good::whereIn('id', $order_goods_id)
-            ->where('shipping_status', 3)
-            ->update(['shipping_status' => 4]);
-        if($order_goods == 0) return status(40002, '操作失败');
-        return status(200, '操作成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods_id = json_decode($request->order_goods_id, true);
+            $order_goods = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 3)
+                ->update(['shipping_status' => 4]);
+            if($order_goods == 0) return status(40002, '操作失败');
+            $order_goods_action = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 4)
+                ->get();
+            foreach ($order_goods_action as $k => $v){
+                $order_action = new Order_action();
+                $order_action->order_sn = $v['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '物流师傅已从工厂取货（物件：'.$v['goods_name'].'）';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 
 
@@ -556,13 +626,34 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function logistics_remand (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods_id = json_decode($request->order_goods_id, true);
-        $order_goods = Order_good::whereIn('id', $order_goods_id)
-            ->where('shipping_status', 4)
-            ->update(['shipping_status' => 5]);
-        if($order_goods == 0) return status(40002, '操作失败');
-        return status(200, '操作成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods_id = json_decode($request->order_goods_id, true);
+            $order_goods = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 4)
+                ->update(['shipping_status' => 5]);
+            if($order_goods == 0) return status(40002, '操作失败');
+            $order_goods_action = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 5)
+                ->get();
+            foreach ($order_goods_action as $k => $v){
+                $order_action = new Order_action();
+                $order_action->order_sn = $v['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '物流师傅将洗护完成物件送至门店（物件：'.$v['goods_name'].'）';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 
 
@@ -573,58 +664,65 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function staff_receive (Request $request){
-        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods = Order_good::where('shipping_status', 5)
-            ->find($request->order_goods_id);
-        if(empty($order_goods)) return status(404, '数据不存在');
-        $order_goods->status = 2;
-        if(empty($request->shipping_type)) return status(40002, 'shipping_type参数有误');
-        $order_goods->shipping_type = $request->shipping_type;
-        if($request->shipping_type == 2){
-            if(empty($request->express_sn)) return status(40003, 'express_sn参数有误');
-            $order_goods->express_sn = $request->express_sn;
-        }else if($request->shipping_type == 3){
-            $order_goods->shipping_status = 6;
-        }
-        if($request->shipping_type != 1){
-            if(empty($request->province)) return status(40004, 'province参数有误');
-            $order_goods->province = $request->province;
-            if(empty($request->city)) return status(40005, 'city参数有误');
-            $order_goods->city = $request->city;
-            if(empty($request->district)) return status(40006, 'district参数有误');
-            $order_goods->district = $request->district;
-            if(empty($request->address)) return status(40007, 'address参数有误');
-            $order_goods->address = $request->address;
-            if(empty($request->consignee)) return status(40008, 'consignee参数有误');
-            $order_goods->consignee = $request->consignee;
-            if(empty($request->phone)) return status(40009, 'phone参数有误');
-            $order_goods->phone = $request->phone;
-        }
-        $order_goods->save();
-        $order_action = new Order_action();
-        $order_action->order_sn = $order_goods->order_sn;
-        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-        $order_action->order_status = 2;
-        $order_action->shipping_status = 3;
-        $order_action->pay_status = 3;
-        $order_action->action_note = $order_goods->goods_name.'物件洗护完工';
-        $order_action->save();
-        if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 1)->count() == 0){
-            $order = Order::where('order_sn', $order_goods->order_sn)->first();
-            $order->order_status = 3;
-            $order->shipping_status = 5;
-            $order->save();
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods = Order_good::where('shipping_status', 5)
+                ->find($request->order_goods_id);
+            if(empty($order_goods)) return status(404, '数据不存在');
+            $order_goods->status = 2;
+            if(empty($request->shipping_type)) return status(40002, 'shipping_type参数有误');
+            $order_goods->shipping_type = $request->shipping_type;
+            if($request->shipping_type == 2){
+                if(empty($request->express_sn)) return status(40003, 'express_sn参数有误');
+                $order_goods->express_sn = $request->express_sn;
+            }else if($request->shipping_type == 3){
+                $order_goods->shipping_status = 6;
+            }
+            if($request->shipping_type != 1){
+                if(empty($request->province)) return status(40004, 'province参数有误');
+                $order_goods->province = $request->province;
+                if(empty($request->city)) return status(40005, 'city参数有误');
+                $order_goods->city = $request->city;
+                if(empty($request->district)) return status(40006, 'district参数有误');
+                $order_goods->district = $request->district;
+                if(empty($request->address)) return status(40007, 'address参数有误');
+                $order_goods->address = $request->address;
+                if(empty($request->consignee)) return status(40008, 'consignee参数有误');
+                $order_goods->consignee = $request->consignee;
+                if(empty($request->phone)) return status(40009, 'phone参数有误');
+                $order_goods->phone = $request->phone;
+            }
+            $order_goods->save();
             $order_action = new Order_action();
-            $order_action->order_sn = $order->order_sn;
+            $order_action->order_sn = $order_goods->order_sn;
             $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-            $order_action->order_status = 3;
-            $order_action->shipping_status = 5;
+            $order_action->order_status = 2;
+            $order_action->shipping_status = 3;
             $order_action->pay_status = 3;
-            $order_action->action_note = '所有物件洗护完工';
+            $order_action->action_note = '洗护完工（物件：'.$order_goods['goods_name'].'）';
             $order_action->save();
+            if(Order_good::where('order_sn', $order_goods['order_sn'])->where('status', 1)->count() == 0){
+                $order = Order::where('order_sn', $order_goods['order_sn'])->first();
+                $order->order_status = 3;
+                $order->shipping_status = 5;
+                $order->save();
+                $order_action = new Order_action();
+                $order_action->order_sn = $order->order_sn;
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 3;
+                $order_action->shipping_status = 5;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '所有物件洗护完工';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
         }
-        return status(200, '操作成功');
     }
 
 
@@ -635,18 +733,34 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function staff_rework (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods = Order_good::where('shipping_status', 5)
-            ->find($request->order_goods_id);
-        if(empty($order_goods)) return status(404, '数据不存在');
-        $order_goods->is_rework = 2;
-        if($order_goods['logistics_type'] == 1){
-            $order_goods->shipping_status = 1;
-        }else{
-            $order_goods->shipping_status = 5;
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods = Order_good::where('shipping_status', 5)
+                ->find($request->order_goods_id);
+            if(empty($order_goods)) return status(404, '数据不存在');
+            $order_goods->is_rework = 2;
+            if($order_goods['logistics_type'] == 1){
+                $order_goods->shipping_status = 1;
+            }else{
+                $order_goods->shipping_status = 5;
+            }
+            $order_goods->save();
+            $order_action = new Order_action();
+            $order_action->order_sn = $order_goods['order_sn'];
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = 2;
+            $order_action->shipping_status = 3;
+            $order_action->pay_status = 3;
+            $order_action->action_note = '员工检验不合格返工处理（物件：'.$v['goods_name'].'）';
+            $order_action->save();
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
         }
-        $order_goods->save();
-        return status(200, '操作成功');
     }
 
 
@@ -691,7 +805,7 @@ class LuxuryOrderController extends Controller
             ->with(['order_goods' => function($query){
                 $query->select('id', 'order_sn', 'goods_sn', 'goods_name', 'goods_img', 'make_price', 'to_buyer', 'is_urgent', 'brand', 'colour', 'price_list_info', 'is_rework');
             }])
-            ->select(['orders.id', 'admins.name as admin_name', 'order_sn', 'orders.created_at', 'done_time', 'consignee', 'orders.phone', 'users.user_money', 'shipping_type', 'province', 'city', 'district', 'address', 'goods_amount', 'shipping_fee', 'coupon', 'order_amount'])
+            ->select(['orders.id', 'admins.name as admin_name', 'order_sn', 'orders.created_at', 'done_time', 'consignee', 'orders.phone', 'users.user_money', 'shipping_type', 'province', 'city', 'district', 'address', 'goods_amount', 'shipping_fee', 'coupon', 'order_amount', 'pay_name'])
             ->where('orders.shop_id', $admin['shop_id'])
             ->find($request->order_id);
         if(empty($order)) return status(404, '没有数据');
@@ -744,40 +858,83 @@ class LuxuryOrderController extends Controller
 
 
     /**
+     * 物流送货上门从门店取货接口
+     *
+     */
+    public function logistics_take (Request $request){
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->goods_id)) return status(40001, 'goods_id参数有误');
+            $goods_id = json_decode($request->goods_id, true);
+            foreach ($goods_id as $v){
+                $order_goods = Order_good::where('status', 2)->where('shipping_status', 6)->where('shipping_type', 3)->find($v);
+                if(empty($order_goods)) return status(404, '数据不存在');
+                $order_goods->shipping_status = 7;
+                $order_goods->save();
+                $order_action = new Order_action();
+                $order_action->order_sn = $order_goods->order_sn;
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].'）';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 6;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '送货上门已从门店取走（物件：'.$order_goods['goods_name'].'）';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
      * 用户取件接口
      *
      */
     public function user_take (Request $request){
-        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        if(empty($request->goods_id)) return status(40001, 'goods_id参数有误');
-        $order_goods = Order_good::where('status', 2)->whereIn('shipping_status', [5, 6])->whereIn('shipping_type', [1, 3])->find($request->goods_id);
-        if(empty($order_goods)) return status(404, '数据不存在');
-        $order_goods->status = 3;
-        $order_goods->shipping_status = 7;
-        $order_goods->save();
-        $order_action = new Order_action();
-        $order_action->order_sn = $order_goods->order_sn;
-        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-        $order_action->order_status = 2;
-        $order_action->shipping_status = 6;
-        $order_action->pay_status = 3;
-        $order_action->action_note = $order_goods['goods_name'].'物件已取走';
-        $order_action->save();
-        if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 3)->count() == 0){
-            $order = Order::where('order_sn', $order_goods->order_sn)->first();
-            $order->order_status = 4;
-            $order->shipping_status = 6;
-            $order->save();
-            $order_action = new Order_action();
-            $order_action->order_sn = $order->order_sn;
-            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-            $order_action->order_status = 4;
-            $order_action->shipping_status = 6;
-            $order_action->pay_status = 3;
-            $order_action->action_note = '订单完成';
-            $order_action->save();
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->goods_id)) return status(40001, 'goods_id参数有误');
+            $goods_id = json_decode($request->goods_id, true);
+            foreach ($goods_id as $v){
+                $order_goods = Order_good::where('status', 2)->whereIn('shipping_status', [5, 7])->whereIn('shipping_type', [1, 3])->find($v);
+                if(empty($order_goods)) return status(404, '数据不存在');
+                $order_goods->status = 3;
+                $order_goods->shipping_status = 8;
+                $order_goods->save();
+                $order_action = new Order_action();
+                $order_action->order_sn = $order_goods->order_sn;
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].'）';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 6;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '用户已收货（物件：'.$order_goods['goods_name'].'）';
+                $order_action->save();
+                if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 3)->count() == 0){
+                    $order = Order::where('order_sn', $order_goods->order_sn)->first();
+                    $order->order_status = 4;
+                    $order->shipping_status = 6;
+                    $order->save();
+                    $order_action = new Order_action();
+                    $order_action->order_sn = $order->order_sn;
+                    $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                    $order_action->order_status = 4;
+                    $order_action->shipping_status = 6;
+                    $order_action->pay_status = 3;
+                    $order_action->action_note = '订单完成';
+                    $order_action->save();
+                }
+            }
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
         }
-        return status(200, '操作成功');
     }
 
 
@@ -789,7 +946,7 @@ class LuxuryOrderController extends Controller
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         // 同城上门未分配
         $staff_order_visits = Order_visit::join('orders', 'order_visits.order_sn', '=', 'orders.order_sn')
-            ->whereIn('order_visits.status', [1, 2])
+            ->where('order_visits.status', 1)
             ->where('orders.shop_id', $admin['shop_id'])
             ->where('orders.order_status', 1)
             ->where('orders.shipping_status', 1)
@@ -799,7 +956,7 @@ class LuxuryOrderController extends Controller
             ->where('order_visits.status', 2)
             ->where('orders.shop_id', $admin['shop_id'])
             ->where('orders.order_status', 1)
-            ->whereIn('orders.shipping_status', [1, 2, 3])
+            ->whereIn('orders.shipping_status', [1, 2])
             ->count();
         // 员工待出库
         $staff_send_number = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
