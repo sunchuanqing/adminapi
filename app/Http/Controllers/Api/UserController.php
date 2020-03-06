@@ -11,6 +11,9 @@ use App\Models\Shop_serve_user;
 use App\Models\User_account;
 use App\Models\User_address;
 use App\Models\User_car;
+use App\Models\User_card;
+use App\Models\User_gift_card;
+use App\Models\User_gift_card_account;
 use App\Models\User_pay_point;
 use App\Models\User_rank;
 use App\User;
@@ -27,11 +30,14 @@ class UserController extends Controller
      */
     public function user_info (Request $request){
         if(empty($request->sn)) return status(40001, 'sn参数有误');
-        $data = User::join('user_ranks', 'users.user_rank_id', '=', 'user_ranks.id')->select(['users.id', 'users.user_sn', 'users.user_name', 'users.sex', 'users.phone', 'users.created_at', 'users.user_money', 'users.pay_points', 'user_ranks.name as vip_name']);
+        $data = User::join('user_ranks', 'users.user_rank_id', '=', 'user_ranks.id')
+            ->select(['users.id', 'users.user_sn', 'users.user_name', 'users.sex', 'users.phone', 'users.created_at', 'users.user_money', 'users.pay_points', 'user_ranks.name as vip_name', 'users.gift_card_money', 'users.give_money']);
         if(strlen($request->sn) == 10){
             $user = $data->where('user_sn', $request->sn)->first();
-        }else{
+        }else if(strlen($request->sn) == 11){
             $user = $data->where('phone', $request->sn)->first();
+        }else{
+            $user = $data->where('users.id', $request->sn)->first();
         }
         if(empty($user)) return status(404, '找不到会员');
         return status(200, 'success', $user);
@@ -50,7 +56,7 @@ class UserController extends Controller
         if(empty($request->phone)) return status(40003, 'phone参数不正确');
         if(empty($request->user_rank_id)) return status(40004, 'user_rank_id参数不正确');
         if(empty($request->sex)) return status(40005, 'sex参数不正确');
-        if(User::where('phone', $request->phone)->count() == 1) return status(40006, '会员已存在');
+        if(User::where('phone', $request->phone)->count() > 0) return status(40006, '会员已存在');
         DB::beginTransaction();
         try {
             $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
@@ -134,9 +140,6 @@ class UserController extends Controller
         if(empty($request->car_province)) return status(40002, 'car_province参数有误');
         if(empty($request->car_city)) return status(40003, 'car_city参数有误');
         if(empty($request->car_number)) return status(40004, 'car_number参数有误');
-        if(empty($request->car_info)) return status(40005, 'car_info参数有误');
-        if(empty($request->car_colour)) return status(40006, 'car_colour参数有误');
-        if(empty($request->car_type)) return status(40007, 'car_type参数有误');
         if(User_car::where('plate_number', $request->car_province.$request->car_city.$request->car_number)->count() == 1) return status(40008, '车辆已存在');
         $user_car = new User_car();
         $user_car->user_id = $request->user_id;
@@ -249,13 +252,19 @@ class UserController extends Controller
             $user_car->save();
             return status(200, '绑定成功');
         }
-        if(Order::where('shop_id', $admin['shop_id'])->where('user_car_id', $user_car['id'])->where('order_status', '!=', 4)->count() > 0){
-            if(empty($request->order_id)) return status(40007, 'order_id参数有误');
+        if(!empty($request->order_id)){
             $order = Order::find($request->order_id);
             if($order['serve_user_id'] != null) return status(40008, '订单含有优惠套餐不许换绑');
             $order->user_id = $request->user_id;
             $order->save();
         }
+//        if(Order::where('shop_id', $admin['shop_id'])->where('user_car_id', $user_car['id'])->where('order_status', '!=', 4)->count() > 0){
+//            if(empty($request->order_id)) return status(40007, 'order_id参数有误');
+//            $order = Order::find($request->order_id);
+//            if($order['serve_user_id'] != null) return status(40008, '订单含有优惠套餐不许换绑');
+//            $order->user_id = $request->user_id;
+//            $order->save();
+//        }
         $user_car->user_id = $request->user_id;
         $user_car->save();
         return status(200, '绑定成功');
@@ -351,7 +360,7 @@ class UserController extends Controller
         if(empty($request->user_id)) return status(40001, 'user_id参数不正确');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         $coupon_user = Coupon_user::where('user_id', $request->user_id)
-            ->whereIn('subject_type', [1, 2])
+            ->whereIn('subject_type', [1, 2, 4])
             ->whereIn('shop_id', [0, $admin['shop_id']])
             ->whereIn('pay_status', [0, 3])
             ->where('status', 1)
@@ -372,44 +381,95 @@ class UserController extends Controller
     public function add_user_money (Request $request){
         if(empty($request->user_id)) return status(40001, 'user_id参数不正确');
         if(empty($request->money)) return status(40002, 'money参数不正确');
-        if(empty($request->pay_type)) return status(40003, 'pay_type参数不正确');
+            if(empty($request->pay_type)) return status(40003, 'pay_type参数不正确');
         if(empty($request->money_type)) return status(40004, 'money_type参数不正确');
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
         DB::beginTransaction();
         try {
             // 1.添加用户余额
             $user = User::find($request->user_id);
+            $recharge_sn = sn_26();
             $pay_points = 0;// 赠送积分
             $give_money = 0;// 赠送金额
+            $gift_card_money = 0;// 赠送礼品卡
             if($request->money_type == 1){
                 if($request->money == 3000){
                     $pay_points = 1500;
                     $give_money = 300;
+                    $gift_card_money = 500;
                 }else if($request->money == 5000){
                     $pay_points = 2500;
                     $give_money = 1000;
+                    $gift_card_money = 500;
                 }else if($request->money == 10000){
                     $pay_points = 5000;
                     $give_money = 3000;
+                    $gift_card_money = 1000;
                 }else if($request->money == 20000){
                     $pay_points = 10000;
                     $give_money = 8000;
+                    $gift_card_money = 1000;
                 }else if($request->money == 30000){
                     $pay_points = 20000;
                     $give_money = 15000;
+                    $gift_card_money = 2000;
                 }
             }
-            $user->user_money = $user->user_money+$request->money+$give_money;
+            $user->user_money = $user->user_money+$request->money;
+            $user->gift_card_money = $user->gift_card_money+$gift_card_money;
+            $user->give_money = $user->give_money+$give_money;
             $user->pay_points = $user->pay_points+$pay_points;
-            if($user->rank_id != 4){// 会员类型  若果不是年卡  改变为充值会员
-                $user->rank_id = 3;
-            }
             $user->save();
-            // 2.充值表记录数据
-            $recharge_sn = sn_26();
+            // 2.记录积分流水
+            if($pay_points > 0){
+                $user_pay_point = new User_pay_point();
+                $user_pay_point->user_id = $user->id;
+                $user_pay_point->change_name = '充值赠送';
+                $user_pay_point->point_change = $pay_points;
+                $user_pay_point->point = $user->pay_points;
+                $user_pay_point->change_msg = '充值赠送积分';
+                $user_pay_point->save();
+            }
+            // 3.记录赠送金流水
+            if($give_money > 0){
+                $user_give_account = new User_account();// 记录消费流水
+                $user_give_account->account_sn = sn_20();
+                $user_give_account->recharge_sn = $recharge_sn;
+                $user_give_account->user_id = $user->id;
+                $user_give_account->money_change = $give_money;
+                $user_give_account->money = $user->give_money;
+                $user_give_account->change_type = 7;
+                $user_give_account->change_name = '充值赠送';
+                $user_give_account->change_desc = '员工端充值储值金赠送';
+                $user_give_account->shop_id = $admin['shop_id'];
+                $user_give_account->save();
+            }
+            // 4.记录礼品卡流水
+            if($gift_card_money > 0){
+                $user_gift_card_account = new User_gift_card_account();
+                $user_gift_card_account->user_id = $user->id;
+                $user_gift_card_account->account_sn = sn_20();
+                $user_gift_card_account->money_change = $gift_card_money;
+                $user_gift_card_account->money = $user->gift_card_money;
+                $user_gift_card_account->change_name = '充值赠送';
+                $user_gift_card_account->save();
+            }
+            // 5.记录流水
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->user_id = $user->id;
+            $user_account->recharge_sn = $recharge_sn;
+            $user_account->money_change = $request->money;
+            $user_account->money = $user->user_money;
+            $user_account->change_type = 1;
+            $user_account->change_name = '储值金充值';
+            $user_account->change_desc = '员工端工作人员充值 '.$request->change_desc;
+            $user_account->shop_id = $admin['shop_id'];
+            $user_account->save();
+            // 6.充值表记录数据
             $recharge_balance = new Recharge_balance();
             $recharge_balance->recharge_sn = $recharge_sn;
-            $recharge_balance->user_id = $request->user_id;
+            $recharge_balance->user_id = $user->id;
             $recharge_balance->money = $request->money;
             $recharge_balance->status = 2;
             $recharge_balance->pay_status = 2;
@@ -417,32 +477,6 @@ class UserController extends Controller
             $recharge_balance->admin_id = $admin['id'];
             $recharge_balance->shop_id = $admin['shop_id'];
             $recharge_balance->save();
-            // 3.赠送积分
-            $user_pay_point = new User_pay_point();
-            $user_pay_point->user_id = $user->id;
-            $user_pay_point->change_name = '充值赠送';
-            $user_pay_point->point_change = $pay_points;
-            $user_pay_point->point = $user->pay_points;
-            $user_pay_point->change_msg = '充值赠送积分';
-            $user_pay_point->save();
-            // 4.记录流水
-            $pay = Payment::find($request->pay_type);
-            $user_account = new User_account();
-            $user_account->account_sn = sn_20();
-            $user_account->recharge_sn = $recharge_sn;
-            $user_account->user_id = $request->user_id;
-            $user_account->money_change = $request->money;
-            $user_account->money = $user['user_money'];
-            $user_account->change_name = $pay->pay_name.'支付';
-            if(empty($request->change_desc)) {
-                $user_account->change_desc = '工作人员充值（含赠送金额：'.$give_money.'元）';
-            }else{
-                $user_account->change_desc = $request->change_desc;
-            }
-            $user_account->shop_id = $admin['shop_id'];
-            $user_account->save();
-            // 3.修改会员等级
-            // 4.赠送礼品
             DB::commit();
             return status(200, '充值成功');
         } catch (QueryException $ex) {
@@ -572,5 +606,56 @@ class UserController extends Controller
         $info = $order->get();
         if(count($info) == 0) return status(404, '没有数据');
         return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 用户的年卡接口
+     */
+    public function user_card (Request $request){
+        if(empty($request->car_number)) return status(40001, 'car_number参数有误');
+        $user_card = User_card::where('car_number', $request->car_number)->where('status', 1)->first();
+        if(empty($user_card)) return status(200, 'success', ['id' => null]);
+        return status(200, 'success', ['id' => $user_card->id]);
+    }
+
+
+    /**
+     * 礼品卡转增
+     */
+    public function give_gift_card (Request $request){
+        if(empty($request->id)) return status(40001, '礼品卡id必填');
+        if(empty($request->user_id)) return status(40002, '转增人user_id必填');
+        if(empty($request->give_user_id)) return status(40003, '接收人人give_user_id必填');
+        $user_gift_card = User_gift_card::find($request->id);
+        if(empty($user_gift_card)) return status(40004, '找不到此礼品卡');
+        if($user_gift_card->user_id != $request->user_id) return status(40005, '用户数据有误');
+        if($request->user_id->status != 1) return status(40006, '此卡片已使用');
+        DB::beginTransaction();
+        try {
+            $user_gift_card->status = 4;
+            $user_gift_card->give_user_id = $request->give_user_id;
+            $give_gift_card = new User_gift_card();
+            $give_gift_card->user_id = $request->give_user_id;
+            $give_gift_card->gift_card_id = $request->gift_card_id;
+            $give_gift_card->gift_card_sn = $user_gift_card->gift_card_sn;
+            $give_gift_card->user_gift_card_sn = sn_19();
+            $give_gift_card->gift_card_name = $user_gift_card->gift_card_name;
+            $give_gift_card->gift_card_type = 1;
+            $give_gift_card->gift_card_money = $user_gift_card->gift_card_money;
+            $give_gift_card->price = $user_gift_card->price;
+            $give_gift_card->gift_card_brief = $user_gift_card->gift_card_brief;
+            $give_gift_card->gift_card_front_img = $user_gift_card->gift_card_front_img;
+            $give_gift_card->gift_card_reverse_img = $user_gift_card->gift_card_reverse_img;
+            $give_gift_card->status = 1;
+            $give_gift_card->gift_card_notice = $user_gift_card->gift_card_notice;
+            $give_gift_card->gift_card_time = $user_gift_card->gift_card_time;
+            $give_gift_card->save();
+            DB::commit();
+            return status(200, '领取成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 }

@@ -80,6 +80,16 @@ function sn_20 (){
 }
 
 
+function order_sn (){
+    $sn = substr(date('YmdHis', time()), 2, 10).mt_rand(10000, 99999);
+    if(\App\Models\Order::where('order_sn', $sn)->count() == 0){
+        return $sn;
+    }else{
+        order_sn();
+    }
+}
+
+
 // 生成10位会员卡号
 function user_sn (){
     $sn = substr(date('Ymd', time()), 2, 6).mt_rand(1000, 9999);

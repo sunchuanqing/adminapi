@@ -13,11 +13,14 @@ use App\Models\Order_visit;
 use App\Models\Payment;
 use App\Models\Price_list;
 use App\Models\Price_type;
+use App\Models\Shop_serve_user;
 use App\Models\User_account;
+use App\Models\User_gift_card_account;
 use App\User;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
 class LuxuryOrderController extends Controller
@@ -39,7 +42,7 @@ class LuxuryOrderController extends Controller
             ->where('order_status', $request->order_status)
             ->whereIn('shipping_status', $shipping_status)
             ->where('order_visits.status', $request->status)
-            ->select(['orders.id', 'orders.consignee', 'orders.phone', 'orders.shop_id', 'orders.shipping_status', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id', 'shops.shop_phone'])
+            ->select(['orders.id', 'orders.user_id', 'orders.consignee', 'orders.phone', 'orders.shop_id', 'orders.shipping_status', 'order_visits.number', 'order_visits.province', 'order_visits.city', 'order_visits.district', 'order_visits.address', 'order_visits.visit_time', 'order_visits.id as visits_id', 'shops.shop_phone', 'old_order_goods_id'])
             ->orderBy('id', 'desc');
         if(!empty($request->name)) {
             $order->where('orders.consignee', 'like', '%'.$request->name.'%');
@@ -72,7 +75,8 @@ class LuxuryOrderController extends Controller
         $order_action->order_status = 1;
         $order_action->shipping_status = 1;
         $order_action->pay_status = 1;
-        $order_action->action_note = '员工通知物流师傅';
+        $order_action->order_goods_id = 0;
+        $order_action->action_note = '已通知物流师傅';
         $order_action->save();
         return status(200, '通知成功');
     }
@@ -102,6 +106,7 @@ class LuxuryOrderController extends Controller
         $order_action->order_status = 1;
         $order_action->shipping_status = 2;
         $order_action->pay_status = 1;
+        $order_action->order_goods_id = 0;
         $order_action->action_note = '物流师傅揽件';
         $order_action->save();
         return status(200, '揽件成功');
@@ -114,23 +119,72 @@ class LuxuryOrderController extends Controller
      * 通知物流状态：1未通知  2已通知   order_visits.status
      */
     public function receive_goods (Request $request){
-        $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        if(empty($request->order_id)) return status(40001, 'order_id参数有误');
-        $order = Order::find($request->order_id);
-        if(empty($order)) return status(404, '订单信息不存在');
-        if($order->order_status != 1) return status(40002, '此状态不可操作');
-        if($order->shipping_status != 2) return status(40003, '此状态不可操作');
-        $order->shipping_status = 3;
-        $order->save();
-        $order_action = new Order_action();
-        $order_action->order_sn = $order['order_sn'];
-        $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-        $order_action->order_status = 1;
-        $order_action->shipping_status = 3;
-        $order_action->pay_status = 1;
-        $order_action->action_note = '物流师傅送货至门店';
-        $order_action->save();
-        return status(200, '送货成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_id)) return status(40001, 'order_id参数有误');
+            $order = Order::find($request->order_id);
+            if(empty($order)) return status(404, '订单信息不存在');
+            if($order->order_status != 1) return status(40002, '此状态不可操作');
+            if($order->shipping_status != 2) return status(40003, '此状态不可操作');
+            if($order->old_order_goods_id != null){
+                $old_order_goods = Order_good::find($order->old_order_goods_id);
+                $order_goods = new Order_good();
+                $order_goods->order_sn = $order->order_sn;
+                $order_goods->goods_sn = $old_order_goods->goods_sn;
+                $order_goods->goods_name = $old_order_goods->goods_name;
+                $order_goods->goods_img = $old_order_goods->goods_img;
+                $order_goods->goods_number = 1;
+                $order_goods->market_price = $old_order_goods->market_price;;
+                $order_goods->make_price = 0;
+                $order_goods->attr_name = $old_order_goods->attr_name;
+                $order_goods->status = 1;
+                $order_goods->shipping_status = 1;
+                $order_goods->shipping_type = 3;
+                $order_goods->best_time = $old_order_goods->best_time;
+                $order_goods->brand = $old_order_goods->brand;
+                $order_goods->colour = $old_order_goods->colour;
+                $order_goods->part = $old_order_goods->part;
+                $order_goods->else_part = $old_order_goods->else_part;
+                $order_goods->effect = $old_order_goods->effect;
+                $order_goods->else_effect = $old_order_goods->else_effect;
+                $order_goods->flaw = $old_order_goods->flaw;
+                $order_goods->else_flaw = $old_order_goods->else_flaw;
+                $order_goods->price_list_info = $old_order_goods->price_list_info;
+                $order_goods->is_rework = 2;
+                $order_goods->to_buyer = $order->to_buyer;
+                $order_goods->save();
+                $order->order_status = 6;
+                $order->shipping_status = 3;
+                $order->pay_status = 3;
+                $order->save();
+                $order_action = new Order_action();
+                $order_action->order_sn = $order['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 6;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->action_note = '物流师傅送货至门店，返工单已自动开单';
+                $order_action->save();
+            }else{
+                $order->shipping_status = 3;
+                $order->save();
+                $order_action = new Order_action();
+                $order_action->order_sn = $order['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 1;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 1;
+                $order_action->order_goods_id = 0;
+                $order_action->action_note = '门店接收物件';
+                $order_action->save();
+            }
+            DB::commit();
+            return status(200, '送货成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
 
 
@@ -162,7 +216,7 @@ class LuxuryOrderController extends Controller
             $user->save();
             $user = User::where('phone', $request->phone)->first();
         }
-        $order_sn = sn_26();
+        $order_sn = order_sn();
         DB::beginTransaction();
         try {
             // 1.写入订单
@@ -188,7 +242,8 @@ class LuxuryOrderController extends Controller
             $order_action->order_status = 1;
             $order_action->shipping_status = 1;
             $order_action->pay_status = 1;
-            $order_action->action_note = '员工提交预约';
+            $order_action->order_goods_id = 0;
+            $order_action->action_note = '预约成功';
             $order_action->save();
             // 3.写入预约信息
             $order_visit = new Order_visit();
@@ -229,14 +284,16 @@ class LuxuryOrderController extends Controller
         try {
             $shipping_fee = 0;// 配送费  奢护不计算运费
             $coupon = 0;// 优惠券抵扣金额
-            $goods_amount = 0;// 订单商品金额
-            $data_goods = [];// 订单商品信息
+            $gift_card_money = 0;// 礼品卡抵扣金额
+            $order_amount = 0;// 订单金额
+            $shop_serve_user_money = 0;// 套餐抵用金额
+            $data_goods = array();// 订单商品信息
             $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
             if(empty($request->phone)) return status(40001, 'phone参数有误');
             // 判断是否新开订单
             if(empty($request->order_id)){
                 // 添加新订单
-                if(User::where('phone', $request->phone)->count() == 1){// 断是否为平台会员
+                if(User::where('phone', $request->phone)->count() > 0){// 断是否为平台会员
                     $user = User::where('phone', $request->phone)->first();
                 }else{
                     // 不是会员默认注册
@@ -252,102 +309,187 @@ class LuxuryOrderController extends Controller
                     $user = User::where('phone', $request->phone)->first();
                 }
                 $order = new Order();
-                $order_sn = sn_26();
+                $order_sn = order_sn();
             }else{
                 // 预约订单修改
                 $order = Order::find($request->order_id);
                 $user = User::find($order['user_id']);
                 $order_sn = $order['order_sn'];
             }
+            // 1.获取奢护的物件
+            if(empty($request->goods_info)) return status(40003, 'goods_info参数有误');
+            $goods_info = json_decode($request->goods_info, true);
+            foreach ($goods_info as $k => $v){
+                $order_amount = $order_amount+$v['make_price'];
+                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => sn_20(), 'goods_name' => $v['goods_name'], 'price_type_id' => $v['price_type_id'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'else_part' => $v['else_part'], 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'else_flaw' => $v['else_flaw'], 'price_list_info' => json_encode($v['price_list_info']), 'shipping_status' => 1, 'shipping_type' => $request->shipping_type, 'is_rework' => 1, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
+            }
+            // 判断是否使用优惠券
+            if(!empty($request->coupon_id)){
+                $coupon = Coupon_user::where('user_id', $user->id)
+                    ->whereIn('pay_status', [0, 3])
+                    ->where('status', 1)
+                    ->whereIn('subject_type', [1, 2])
+                    ->where('full_money', '<=' ,$order_amount)
+                    ->where('coupon_start_time', '<=', date('Y-m-d', time()))
+                    ->where('coupon_end_time', '>=', date('Y-m-d', time()))
+                    ->find($request->coupon_id);
+                if(empty($coupon)) return status(40004, '优惠券不可用');
+                // 计算减去优惠金额后的总金额
+                $order_amount = $order_amount-$coupon->money;
+                $coupon = $coupon->money;
+                // 核销优惠券
+                $coupon_melt = Coupon_user::find($request->coupon_id);
+                $coupon_melt->status = 2;
+                $coupon_melt->coupon_order = $order_sn;
+                $coupon_melt->save();
+            }
+            // 判断是否使用优惠套餐
+            if(!empty($request->shop_serve_user_id)){
+                $shop_serve_user_id = json_decode($request->shop_serve_user_id, true);
+                foreach ($shop_serve_user_id as $k => $v){
+                    $shop_serve_user = Shop_serve_user::where('serve_start_time', '<=', date('Y-m-d', time()))
+                        ->where('serve_end_time', '>=', date('Y-m-d', time()))
+                        ->whereIn('status', [1, 3])
+                        ->where('pay_status', 3)
+                        ->where('user_id', $user['id'])
+                        ->find($v['id']);
+                    if(empty($shop_serve_user)) return status(40005, '优惠套餐不可用');
+                    // 核销套餐
+                    // 套餐剩余可用次数 $number
+                    $residue_number = $shop_serve_user['number']-$shop_serve_user['use_number'];
+                    if($residue_number >= $v['number']){
+                        if($residue_number == $v['number']){
+                            $shop_serve_user->status = 2;
+                            $shop_serve_user->use_number = $shop_serve_user->use_number+$v['number'];
+                            $shop_serve_user->save();
+                        }else{
+                            $shop_serve_user->status = 3;
+                            $shop_serve_user->use_number = $shop_serve_user->use_number+$v['number'];
+                            $shop_serve_user->save();
+                        }
+                    }else{
+                        return status(40005, '套餐数量不足');
+                    }
+                }
+                $shop_serve_user_money = $request->shop_serve_user_money;
+            }
+            // 6.是否使用礼品卡
+            if(!empty($request->gift_card_money)){
+                if($user->gift_card_money <= 0) return status(40006, '礼品卡金额不足');
+                // 计算减去礼品卡金额后的总金额
+                if($user->gift_card_money >= $order_amount){
+                    // 完全使用
+                    $gift_card_money = $order_amount;
+                    $order_amount = 0;
+                }else{
+                    // 不完全使用
+                    $order_amount = $order_amount-$user->gift_card_money;
+                    $gift_card_money = $user->gift_card_money;
+                }
+                // 核销礼品卡金额
+                $user->gift_card_money = $user->gift_card_money-$gift_card_money;
+                $user->save();
+                $user_gift_card_account = new User_gift_card_account();
+                $user_gift_card_account->user_id = $user->id;
+                $user_gift_card_account->account_sn = sn_20();
+                $user_gift_card_account->order_sn = $order_sn;
+                $user_gift_card_account->money_change = -$gift_card_money;
+                $user_gift_card_account->money = $user->gift_card_money;
+                $user_gift_card_account->change_name = '订单抵扣';
+                $user_gift_card_account->save();
+            };
             // 1.订单信息
-            $user_name = $user['user_name'];
-            $phone = $user['phone'];
             $order->order_sn = $order_sn;
             $order->order_type = 1;
             $order->user_id = $user['id'];
             $order->shop_id = $admin['shop_id'];
-            $order->order_status = 2;
+            $order->order_status = 6;
             $order->shipping_status = 3;
             $order->pay_status = 3;
-            if(empty($request->shipping_type)) return status(40003, 'shipping_type参数有误');
+            if(empty($request->shipping_type)) return status(40007, 'shipping_type参数有误');
             $order->shipping_type = $request->shipping_type;
             if($request->shipping_type != 1){
                 $order->country = 86;
-                if(empty($request->province)) return status(40004, 'province参数有误');
+                if(empty($request->province)) return status(40008, 'province参数有误');
                 $order->province = $request->province;
-                if(empty($request->city)) return status(40005, 'city参数有误');
+                if(empty($request->city)) return status(40009, 'city参数有误');
                 $order->city = $request->city;
-                if(empty($request->district)) return status(40006, 'district参数有误');
+                if(empty($request->district)) return status(40010, 'district参数有误');
                 $order->district = $request->district;
-                if(empty($request->address)) return status(40007, 'address参数有误');
+                if(empty($request->address)) return status(40011, 'address参数有误');
                 $order->address = $request->address;
-                if(empty($request->address_user_name)) return status(40008, 'address_user_name参数有误');
-                $user_name = $request->address_user_name;
-                if(empty($request->address_phone)) return status(40009, 'address_phone参数有误');
-                $phone = $request->address_phone;
+                if(empty($request->address_user_name)) return status(40012, 'address_user_name参数有误');
+                $order->consignee = $request->address_user_name;
+                if(empty($request->address_phone)) return status(40013, 'address_phone参数有误');
+                $order->phone = $request->address_phone;
+            }else{
+                $order->consignee = $user['user_name'];
+                $order->phone = $user['phone'];
             }
-            $order->consignee = $user_name;
-            $order->phone = $phone;
-            if(empty($request->pay_id)) return status(40010, 'pay_id参数有误');
+            if(empty($request->pay_id)) return status(40014, 'pay_id参数有误');
             $pay = Payment::find($request->pay_id);
             $order->pay_id = $request->pay_id;
             $order->pay_name = $pay['pay_name'];
-            // 获取商品信息 计算商品价格
-            if(empty($request->goods_info)) return status(40011, 'goods_info参数有误');
-            $goods_info = json_decode($request->goods_info, true);
-            foreach ($goods_info as $k => $v){
-                $goods_amount = $goods_amount+$v['make_price'];
-                array_push($data_goods, ['order_sn' => $order_sn, 'goods_sn' => sn_20(), 'goods_name' => $v['goods_name'], 'goods_img' => $v['goods_img'], 'goods_number' => 1,'market_price' => $v['market_price'] , 'make_price' => $v['make_price'], 'attr_name' => '奢侈品护理', 'status' => 1, 'to_buyer' => $v['to_buyer'], 'is_urgent' => $v['is_urgent'], 'best_time' => $v['best_time'], 'brand' => $v['brand'], 'colour' => $v['colour'], 'part' => json_encode($v['part']), 'effect' => json_encode($v['effect']), 'flaw' => json_encode($v['flaw']), 'price_list_info' => json_encode($v['price_list_info']), 'shipping_status' => 1, 'shipping_type' => $request->shipping_type, 'is_rework' => 1, 'created_at' => date('Y-m-d H:i:s', time()), 'updated_at' => date('Y-m-d H:i:s', time())]);
-            }
-            $order->goods_amount = $goods_amount;
+            $order->goods_amount = $order_amount+$coupon+$gift_card_money;
             $order->shipping_fee = $shipping_fee;
-            if(!empty($request->coupon_id)){
-                $coupon_user = Coupon_user::where('full_money', '<=' ,$goods_amount)->find($request->coupon_id);
-                if(empty($coupon_user)) return status(40004, '优惠券不可用');
-                $coupon_user->status = 2;
-                $coupon_user->coupon_order = $order->order_sn;
-                $coupon_user->save();
-                $coupon = $coupon_user->money;
-            }
             $order->coupon = $coupon;
-            $order->order_amount = $goods_amount-$coupon;
+            $order->gift_card = $gift_card_money;
+            $order->server = $shop_serve_user_money;
+            $order->order_amount = $order_amount-$shop_serve_user_money;
             $order->pay_time = date('Y-m-d H:i:s', time());
-            $order->shipping_time = date('Y-m-d H:i:s', time());
             $order->admin_id = $admin['id'];
             $order->postscript = $request->postscript;
+            $order->serve_user_id = $request->shop_serve_user_id;
             $order->save();
-            // 2.判断支付方式为余额 自动扣卡
+            // 7.判断是否为余额支付 是 扣卡
+            // 若为储值金或赠送金 会员账户扣款
+            if($request->pay_id == 1){// 储值金
+                if($user->user_money < $order->order_amount){
+                    if($user->give_money<($order->order_amount-$user->user_money)) return status(40015, '账户余额不足');
+                    $user->user_money = $user->user_money-$order->order_amount;
+                    $user->save();
+                    $change_money = $user->user_money;
+                    $type = 1;
+                }else{
+                    $user->user_money = $user->user_money-$order->order_amount;
+                    $user->save();
+                    $change_money = $user->user_money;
+                    $type = 1;
+                }
+            }else if($request->pay_id == 7){// 赠送金
+                if($user->give_money < $order->order_amount) return status(40016, '账户余额不足');
+                $user->give_money = $user->give_money-$order->order_amount;
+                $user->save();
+                $change_money = $user->give_money;
+                $type = 1;
+            }else{
+                $change_money = 0;
+                $type = 2;
+            }
+            // 记录储值金交易流水
             $user_account = new User_account();
             $user_account->account_sn = sn_20();
-            $user_account->order_sn = $order->order_sn;
-            $user_account->user_id = $order->user_id;
+            $user_account->order_sn = $order_sn;
+            $user_account->user_id = $user['id'];
             $user_account->money_change = -$order->order_amount;
-            $user_account->money = $user->user_money;
+            $user_account->money = $change_money;
+            $user_account->change_type = $request->pay_id;
+            $user_account->change_name = $pay->pay_name.'支付';
+            $user_account->change_desc = '员工端奢侈品护理开单支付成功';
             $user_account->shop_id = $admin['shop_id'];
-            if($request->pay_id ==1){
-                if($user->user_money < $order->order_amount) return status(40011, '账户余额不足');
-                $user->user_money = $user->user_money-$order->order_amount;
-                $user->save();
-                // 记录余额交易流水
-                $user_account->change_name = '余额支付';
-                $user_account->change_desc = '奢护门店开单 选择账户余额付款';
-                $user_account->save();
-            }else{
-                $user_account->change_name = $pay['pay_name'].'订单支付';
-                $user_account->change_desc = '奢护支付成功（不计入用户账户流水）';
-                $user_account->type = 2;
-                $user_account->save();
-            }
+            $user_account->type = $type;
+            $user_account->save();
             // 3.写入订单商品表
             DB::table('order_goods')->insert($data_goods);
             // 4.写入订单操作状态
             $order_action = new Order_action();
             $order_action->order_sn = $order_sn;
             $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
-            $order_action->order_status = 2;
+            $order_action->order_status = 6;
             $order_action->shipping_status = 3;
             $order_action->pay_status = 3;
-            $order_action->action_note = '员工开单';
+            $order_action->order_goods_id = 0;
+            $order_action->action_note = '员工开单，订单已确认';
             $order_action->save();
             DB::commit();
             return status(200, 'success', ['order_sn' => $order_sn]);
@@ -466,24 +608,42 @@ class LuxuryOrderController extends Controller
             $shipping_type = json_decode($request->shipping_type, true);
         };
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+        if(empty($request->page)) return status(40003, 'page参数必填');
+        $page = $request->page;// 页数
+        $limit = 10;// 每页条数
+        $num = ($page-1)*$limit;// 跳过的条数
         $order_goods_list = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
             ->where('orders.shop_id', $admin['shop_id'])
             ->where('order_goods.status', $request->status)
             ->where('order_goods.shipping_status', $request->shipping_status)
             ->whereIn('order_goods.shipping_type', $shipping_type)
             ->orderBy('id', 'desc')
-            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.consignee', 'orders.phone', 'orders.province', 'orders.city', 'orders.district', 'orders.address', 'order_goods.consignee as goods_consignee', 'order_goods.phone as goods_phone', 'order_goods.province as goods_province', 'order_goods.city as goods_city', 'order_goods.district as goods_district', 'order_goods.address as goods_address', 'order_goods.shipping_type as goods_shipping_type']);
-        if(!empty($request->goods_sn)){
-            $order_goods_list->where('goods_sn', 'like', '%'.$request->goods_sn.'%');
+            ->select(['order_goods.id', 'goods_sn', 'is_urgent', 'is_rework', 'goods_img', 'goods_name', 'brand', 'colour', 'price_list_info', 'make_price', 'order_goods.to_buyer', 'orders.shipping_type', 'orders.consignee', 'orders.phone', 'orders.province', 'orders.city', 'orders.district', 'orders.address', 'order_goods.order_sn', 'order_goods.consignee as goods_consignee', 'order_goods.phone as goods_phone', 'order_goods.province as goods_province', 'order_goods.city as goods_city', 'order_goods.district as goods_district', 'order_goods.address as goods_address', 'order_goods.shipping_type as goods_shipping_type', 'order_goods.part', 'order_goods.else_part', 'order_goods.effect', 'order_goods.else_effect', 'order_goods.flaw', 'order_goods.else_flaw', 'order_goods.price_list_info', 'order_goods.best_time', 'price_type_id'])
+            ->offset($num)
+            ->limit($limit);
+        if(!empty($request->order_sn)){
+            $order_goods_list->where('order_goods.order_sn', 'like', '%'.$request->order_sn.'%');
         }
         if(!empty($request->phone)){
-            $order_goods_list->where('phone', 'like', '%'.$request->phone.'%');
+            $order_goods_list->where('orders.phone', 'like', '%'.$request->phone.'%');
+        }
+        if(!empty($request->time)){
+            $order_goods_list->where('order_goods.created_at', 'like', '%'.$request->time.'%');
         }
         if(!empty($request->consignee)){
             $order_goods_list->where('order_goods.consignee', 'like', '%'.$request->consignee.'%');
         }
-        $data = $order_goods_list->get();
-        if(count($data) == 0) return status(404, '找不到数据');
+        $item = $order_goods_list->get();
+        if(count($item) == 0) return status(404, '找不到数据');
+        $data['current_page'] = $page;
+        $data['count'] = Order_good::join('orders', 'order_goods.order_sn', '=', 'orders.order_sn')
+            ->where('orders.shop_id', $admin['shop_id'])
+            ->where('order_goods.status', $request->status)
+            ->where('order_goods.shipping_status', $request->shipping_status)
+            ->whereIn('order_goods.shipping_type', $shipping_type)
+            ->count();
+        $data['page_count'] = $limit;
+        $data['data'] = $item;
         return status(200, 'success', $data);
     }
 
@@ -495,15 +655,43 @@ class LuxuryOrderController extends Controller
      * 物件物流：1已接收 2已送出 3已送达 4已送回  shipping_status
      */
     public function staff_send (Request $request){
-        if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
-        $order_goods_id = json_decode($request->order_goods_id, true);
-        $order_goods = Order_good::whereIn('id', $order_goods_id)
-            ->where('shipping_status', 1)
-            ->update(['shipping_info' => $request->shipping_info, 'shipping_status' => 5, 'logistics_type' => 2]);
-        if($order_goods == 0) return status(40002, '操作失败');
-        return status(200, '操作成功');
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->order_goods_id)) return status(40001, 'order_goods_id参数有误');
+            $order_goods_id = json_decode($request->order_goods_id, true);
+            $order_goods = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 1)
+                ->update(['shipping_info' => $request->shipping_info, 'shipping_status' => 5, 'logistics_type' => 2]);
+            if($order_goods == 0) return status(40002, '操作失败');
+            $order_goods_action = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 5)
+                ->select(['order_sn', 'goods_name'])
+                ->get();
+            foreach ($order_goods_action as $k => $v){
+                $order_action = new Order_action();
+                $order_action->order_sn = $v['order_sn'];
+                $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_action->order_status = 2;
+                $order_action->shipping_status = 3;
+                $order_action->pay_status = 3;
+                $order_action->order_goods_id = $v['id'];
+                $order_action->action_note = '物件送往工厂洗护';
+                $order_action->save();
+            }
+            $order_sn = Order_good::whereIn('id', $order_goods_id)
+                ->where('shipping_status', 5)
+                ->select(['order_sn'])
+                ->distinct('order_sn')
+                ->get();
+            Order::whereIn('order_sn', $order_sn)->update(['order_status' => 2]);
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
     }
-
 
     /**
      * 物流从门送出接口
@@ -531,9 +719,13 @@ class LuxuryOrderController extends Controller
                 $order_action->order_status = 2;
                 $order_action->shipping_status = 3;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '物流师傅从门店取走物件（物件：'.$v['goods_name'].'）';
+                $order_action->order_goods_id = $v['id'];
+                $order_action->action_note = '物件送往工厂';
                 $order_action->save();
             }
+            if(empty($request->order_sn)) return status(40003, 'order_sn参数有误');
+            $order_sn = array_unique(json_decode($request->order_sn, true));
+            Order::whereIn('order_sn', $order_sn)->update(['order_status' => 2]);
             DB::commit();
             return status(200, '操作成功');
         } catch (QueryException $ex) {
@@ -569,7 +761,8 @@ class LuxuryOrderController extends Controller
                 $order_action->order_status = 2;
                 $order_action->shipping_status = 3;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '物流师傅已把物件送至工厂（物件：'.$v['goods_name'].'）';
+                $order_action->order_goods_id = $v['id'];
+                $order_action->action_note = '物件洗护中';
                 $order_action->save();
             }
             DB::commit();
@@ -607,7 +800,8 @@ class LuxuryOrderController extends Controller
                 $order_action->order_status = 2;
                 $order_action->shipping_status = 3;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '物流师傅已从工厂取货（物件：'.$v['goods_name'].'）';
+                $order_action->order_goods_id = $v['id'];
+                $order_action->action_note = '物件洗护完毕';
                 $order_action->save();
             }
             DB::commit();
@@ -645,7 +839,8 @@ class LuxuryOrderController extends Controller
                 $order_action->order_status = 2;
                 $order_action->shipping_status = 3;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '物流师傅将洗护完成物件送至门店（物件：'.$v['goods_name'].'）';
+                $order_action->order_goods_id = $v['id'];
+                $order_action->action_note = '物件已送回门店';
                 $order_action->save();
             }
             DB::commit();
@@ -676,9 +871,24 @@ class LuxuryOrderController extends Controller
             $order_goods->shipping_type = $request->shipping_type;
             if($request->shipping_type == 2){
                 if(empty($request->express_sn)) return status(40003, 'express_sn参数有误');
+                if(empty($request->express_name)) return status(40003, 'express_name参数有误');
                 $order_goods->express_sn = $request->express_sn;
+                $order_goods->express_name = $request->express_name;
+                $order_actions = new Order_action();
+                $order_actions->order_sn = $order_goods->order_sn;
+                $order_actions->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+                $order_actions->order_status = 2;
+                $order_actions->shipping_status = 3;
+                $order_actions->pay_status = 3;
+                $order_actions->order_goods_id = $request->order_goods_id;
+                $order_actions->action_note = '物件已送回门店';
+                $order_actions->save();
+                $action_note = '已寄出（快递名称：'.$request->express_name.' 编号：'.$request->express_sn.'）';
             }else if($request->shipping_type == 3){
                 $order_goods->shipping_status = 6;
+                $action_note = '通知物流配送';
+            }else{
+                $action_note = '等待自取';
             }
             if($request->shipping_type != 1){
                 if(empty($request->province)) return status(40004, 'province参数有误');
@@ -701,7 +911,8 @@ class LuxuryOrderController extends Controller
             $order_action->order_status = 2;
             $order_action->shipping_status = 3;
             $order_action->pay_status = 3;
-            $order_action->action_note = '洗护完工（物件：'.$order_goods['goods_name'].'）';
+            $order_action->order_goods_id = $request->order_goods_id;
+            $order_action->action_note = $action_note;
             $order_action->save();
             if(Order_good::where('order_sn', $order_goods['order_sn'])->where('status', 1)->count() == 0){
                 $order = Order::where('order_sn', $order_goods['order_sn'])->first();
@@ -753,7 +964,7 @@ class LuxuryOrderController extends Controller
             $order_action->order_status = 2;
             $order_action->shipping_status = 3;
             $order_action->pay_status = 3;
-            $order_action->action_note = '员工检验不合格返工处理（物件：'.$v['goods_name'].'）';
+            $order_action->action_note = '员工检验不合格返工处理（物件：'.$order_goods['goods_name'].'）';
             $order_action->save();
             DB::commit();
             return status(200, '操作成功');
@@ -771,17 +982,18 @@ class LuxuryOrderController extends Controller
      */
     public function order_list (Request $request){
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        if(!empty($request->time)){
-            $time = $request->time;
-        }else{
-            $time = date("Y-m-d", time());
-        }
         $order = Order::where('shop_id', $admin['shop_id'])
             ->join('admins', 'orders.admin_id', '=', 'admins.id')
-            ->where('orders.created_at', 'like', '%'.$time.'%')
             ->orderBy('orders.id', 'desc')
             ->select(['orders.id', 'order_sn', 'orders.created_at', 'consignee', 'orders.phone', 'name as admin_name']);
-        if(!empty($request->order_sn)){
+        if(empty($request->order_sn)){
+            if(!empty($request->time)){
+                $time = $request->time;
+            }else{
+                $time = date("Y-m-d", time());
+            }
+            $order->where('orders.created_at', 'like', '%'.$time.'%');
+        }else{
             $order->where('order_sn', 'like', '%'.$request->order_sn.'%');
         }
         $data = $order->get();
@@ -875,10 +1087,11 @@ class LuxuryOrderController extends Controller
                 $order_action = new Order_action();
                 $order_action->order_sn = $order_goods->order_sn;
                 $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].'）';
-                $order_action->order_status = 2;
-                $order_action->shipping_status = 6;
+                $order_action->order_status = 3;
+                $order_action->shipping_status = 5;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '送货上门已从门店取走（物件：'.$order_goods['goods_name'].'）';
+                $order_action->order_goods_id = $order_goods['id'];
+                $order_action->action_note = '正在配送';
                 $order_action->save();
             }
             DB::commit();
@@ -909,10 +1122,11 @@ class LuxuryOrderController extends Controller
                 $order_action = new Order_action();
                 $order_action->order_sn = $order_goods->order_sn;
                 $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].'）';
-                $order_action->order_status = 2;
+                $order_action->order_status = 3;
                 $order_action->shipping_status = 6;
                 $order_action->pay_status = 3;
-                $order_action->action_note = '用户已收货（物件：'.$order_goods['goods_name'].'）';
+                $order_action->order_goods_id = $order_goods['id'];
+                $order_action->action_note = '已收货';
                 $order_action->save();
                 if(Order_good::where('order_sn', $order_goods->order_sn)->where('status', '!=', 3)->count() == 0){
                     $order = Order::where('order_sn', $order_goods->order_sn)->first();
@@ -1021,5 +1235,288 @@ class LuxuryOrderController extends Controller
             'logistics_receive_number' => $logistics_receive_number
         ];
         return status(200, 'success', $info);
+    }
+
+
+    /**
+     * 物件修改接口
+     *
+     */
+    public function update_order_goods (Request $request){
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->id)) return status(40001, '物件id必填');
+            $order_goods = Order_good::find($request->id);
+            $old_make_price = $order_goods->make_price;
+            if(empty($order_goods)) return status(40002, '找不到此物件');
+            if($order_goods->shipping_status != 1) return status(40003, '物件状态不可操作');
+            $order_goods->goods_name = $request->goods_name;
+            $order_goods->goods_img = $request->goods_img;
+            $order_goods->market_price = $request->market_price;
+            $order_goods->make_price = $request->make_price;
+            if(!empty($request->to_buyer))
+                $order_goods->to_buyer = $request->to_buyer;
+            $order_goods->is_urgent = $request->is_urgent;
+            $order_goods->best_time = $request->best_time;
+            $order_goods->brand = $request->brand;
+            $order_goods->colour = $request->colour;
+            $order_goods->part = $request->part;
+            $order_goods->else_part = $request->else_part;
+            $order_goods->effect = $request->effect;
+            $order_goods->flaw = $request->flaw;
+            $order_goods->else_flaw = $request->else_flaw;
+            $order_goods->price_list_info = $request->price_list_info;
+            $order_goods->save();
+            $order = Order::where('order_sn', $order_goods->order_sn)->first();
+            if($old_make_price != $request->make_price){
+                $user = User::find($order->user_id);
+                // 判断价格变化多退少补 新价格-老价格
+                $change_order_amount = $request->make_price-$old_make_price;
+                // 判断是否使用优惠券
+                if($order->coupon > 0){
+                    $coupon = Coupon_user::where('coupon_order', $order->order_sn)->first();
+                    if(($order->goods_amount+$change_order_amount) < $coupon->full_money) return status(40005, '订单使用了优惠券，商品总金额不能低于优惠券门槛金额');
+                }
+                // 若为储值金或赠送金 会员账户扣款
+                if($order->pay_id == 1){// 储值金
+                    if($change_order_amount>0){
+                        if($user->user_money < $change_order_amount) return status(40004, '储值金不足');
+                    }
+                    $user->user_money = $user->user_money-$change_order_amount;
+                    $user->save();
+                    // 修改订单金额
+                    $order->goods_amount = $order->goods_amount+$change_order_amount;
+                    $order->order_amount = $order->order_amount+$change_order_amount;
+                    $order->save();
+                    $change_money = $user->user_money;
+                    $type = 1;
+                }else if($order->pay_id == 7){// 赠送金
+                    if($change_order_amount>0){
+                        if($user->give_money < $change_order_amount) return status(40004, '赠送金不足');
+                    }
+                    $user->give_money = $user->give_money-$change_order_amount;
+                    $user->save();
+                    // 修改订单金额
+                    $order->goods_amount = $order->goods_amount+$change_order_amount;
+                    $order->order_amount = $order->order_amount+$change_order_amount;
+                    $order->save();
+                    $change_money = $user->give_money;
+                    $type = 1;
+                }else{
+                    $change_money = 0;
+                    $type = 2;
+                }
+                // 记录储值金交易流水
+                $user_account = new User_account();
+                $user_account->account_sn = sn_20();
+                $user_account->order_sn = $order->order_sn;
+                $user_account->user_id = $user['id'];
+                $user_account->money_change = -$change_order_amount;
+                $user_account->money = $change_money;
+                $user_account->change_type = $order->pay_id;
+                $user_account->change_name = '订单更改（多退少补）';
+                $user_account->change_desc = '员工端奢侈品护理订单商品修改 价格变动 订单金额多退少补';
+                $user_account->shop_id = $order['shop_id'];
+                $user_account->type = $type;
+                $user_account->save();
+            }
+            // 写入订单操作状态
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = $order->order_status;
+            $order_action->shipping_status = $order->shipping_status;
+            $order_action->pay_status = $order->pay_status;
+            $order_action->action_note = '修改订单物件信息（'.$request->goods_name.'）';
+            $order_action->save();
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 物件删除接口
+     *
+     */
+    public function del_order_goods (Request $request){
+        DB::beginTransaction();
+        try {
+            $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
+            if(empty($request->id)) return status(40001, '物件id必填');
+            $order_goods = Order_good::find($request->id);
+            $old_make_price = $order_goods->make_price;
+            if(empty($order_goods)) return status(40002, '找不到此物件');
+            $order_goods_count = Order_good::where('order_sn', $order_goods->order_sn)->count();
+            if($order_goods_count<=1) return status(40003, '单一物件不许删除');
+            $order = Order::where('order_sn', $order_goods->order_sn)->first();
+            if($order_goods->make_price > 0){
+                $user = User::find($order->user_id);
+                if(empty($user)) return status(40003, '用户不存在');
+                // 判断是否使用优惠券
+                if($order->coupon > 0){
+                    $coupon = Coupon_user::where('coupon_order', $order->order_sn)->first();
+                    if(($order->goods_amount-$old_make_price) < $coupon->full_money) return status(40005, '订单使用了优惠券，商品总金额不能低于优惠券门槛金额');
+                }
+                // 若为储值金或赠送金 会员账户扣款
+                if($order->pay_id == 1){// 储值金
+                    $user->user_money = $user->user_money+$old_make_price;
+                    $user->save();
+                    // 修改订单金额
+                    $order->goods_amount = $order->goods_amount-$old_make_price;
+                    $order->order_amount = $order->order_amount-$old_make_price;
+                    $order->save();
+                    $change_money = $user->user_money;
+                    $type = 1;
+                }else if($order->pay_id == 7){// 赠送金
+                    $user->give_money = $user->give_money+$old_make_price;
+                    $user->save();
+                    // 修改订单金额
+                    $order->goods_amount = $order->goods_amount-$old_make_price;
+                    $order->order_amount = $order->order_amount-$old_make_price;
+                    $order->save();
+                    $change_money = $user->give_money;
+                    $type = 1;
+                }else{
+                    $change_money = 0;
+                    $type = 2;
+                }
+                // 记录储值金交易流水
+                $user_account = new User_account();
+                $user_account->account_sn = sn_20();
+                $user_account->order_sn = $order->order_sn;
+                $user_account->user_id = $user['id'];
+                $user_account->money_change = $old_make_price;
+                $user_account->money = $change_money;
+                $user_account->change_type = $order->pay_id;
+                $user_account->change_name = '物件删除（金额退回）';
+                $user_account->change_desc = '员工端奢侈品护理订单物件删除 价格变动 订单金额退回';
+                $user_account->shop_id = $order['shop_id'];
+                $user_account->type = $type;
+                $user_account->save();
+            }
+            // 写入订单操作状态
+            $order_action = new Order_action();
+            $order_action->order_sn = $order->order_sn;
+            $order_action->action_user = '员工：'.$admin['phone'].'（'.$admin['name'].')';
+            $order_action->order_status = $order->order_status;
+            $order_action->shipping_status = $order->shipping_status;
+            $order_action->pay_status = $order->pay_status;
+            $order_action->action_note = '删除订单物件信息';
+            $order_action->save();
+            $order_goods->delete();
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 删除订单接口
+     */
+    public function del_order (Request $request){
+        DB::beginTransaction();
+        try {
+            if(empty($request->id)) return status(40001, '订单id必填');
+            $order = Order::find($request->id);
+            if(empty($order)) return status(40002, '找不到此订单');
+            $user = User::find($order->user_id);
+            if(empty($user)) return status(40003, '用户不存在');
+            // 退回储值金 赠送金
+            if($order->pay_id == 1){// 储值金
+                $user->user_money = $user->user_money+$order->order_amount;
+                $user->save();
+                $change_money = $user->user_money;
+                $type = 1;
+            }else if($order->pay_id == 7){// 赠送金
+                $user->give_money = $user->give_money+$order->order_amount;
+                $user->save();
+                $change_money = $user->give_money;
+                $type = 1;
+            }else{
+                $change_money = 0;
+                $type = 2;
+            }
+            // 记录储值金交易流水
+            $user_account = new User_account();
+            $user_account->account_sn = sn_20();
+            $user_account->order_sn = $order->order_sn;
+            $user_account->user_id = $user['id'];
+            $user_account->money_change = $order->order_amount;
+            $user_account->money = $change_money;
+            $user_account->change_type = $order->pay_id;
+            $user_account->change_name = '订单删除（金额退回）';
+            $user_account->change_desc = '员工端奢侈品护理订单删除 订单金额退回';
+            $user_account->shop_id = $order['shop_id'];
+            $user_account->type = $type;
+            $user_account->save();
+            // 判断是否使用优惠券
+            if($order->coupon > 0){
+                $coupon = Coupon_user::where('coupon_order', $order->order_sn)->first();
+                $coupon->status = 1;
+                $coupon->coupon_order = null;
+                $coupon->save();
+            }
+            // 判断是否使用礼品卡
+            if($order->gift_card > 0){
+                $user->gift_card_money = $user->gift_card_money+$order->gift_card;
+                $user->save();
+                $user_gift_card_account = new User_gift_card_account();
+                $user_gift_card_account->user_id = $user->id;
+                $user_gift_card_account->account_sn = sn_20();
+                $user_gift_card_account->order_sn = $order->order_sn;
+                $user_gift_card_account->money_change = $order->gift_card;
+                $user_gift_card_account->money = $user->gift_card_money;
+                $user_gift_card_account->change_name = '退款';
+                $user_gift_card_account->save();
+            }
+            // 判断是否使用优惠套餐
+            if($order->server > 0){
+                $shop_serve_user_id = json_decode($order->serve_user_id, true);
+                foreach ($shop_serve_user_id as $k => $v){
+                    $shop_serve_user = Shop_serve_user::find($v['id']);
+                    $shop_serve_user->use_number = $shop_serve_user->use_number-$v['number'];
+                    if($shop_serve_user->use_number == 0){
+                        $shop_serve_user->status = 1;
+                    }else{
+                        $shop_serve_user->status = 3;
+                    }
+                    $shop_serve_user->save();
+                }
+            }
+            // 删除订单以及 订单商品
+            Order_good::where('order_sn', $order->order_sn)->delete();
+            $order->delete();
+            DB::commit();
+            return status(200, '操作成功');
+        } catch (QueryException $ex) {
+            DB::rollback();
+            return status(400, '参数有误');
+        }
+    }
+
+
+    /**
+     * 用户已购奢护优惠套餐列表
+     */
+    public function shop_serve_user (Request $request){
+        if(empty($request->shop_id)) return status(40001, '门店shop_id必填');
+        if(empty($request->user_id)) return status(40002, '订单user_id必填');
+        $shop_serve_user = Shop_serve_user::where('user_id', $request->user_id)
+            ->whereIn('status', [1, 3])
+            ->where('pay_status', 3)
+            ->join('shop_serves', 'shop_serve_users.shop_serve_id', '=', 'shop_serves.id')
+            ->where('shop_serves.shop_id', $request->shop_id)
+            ->select(['shop_serve_users.id', 'user_serve_sn', 'shop_serve_users.serve_name', 'shop_serve_users.serve_img', 'shop_serve_users.serve_start_time', 'shop_serve_users.serve_end_time', 'shop_serve_users.number', 'shop_serve_users.use_number', 'shop_serve_users.status', 'shop_serves.shop_id', 'shop_serve_id', 'shop_serve_users.make_price'])
+            ->get();
+        if(count($shop_serve_user) == 0) return status(404, '找不到优惠套餐');
+        return status(200, 'success', $shop_serve_user);
     }
 }

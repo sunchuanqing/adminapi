@@ -206,8 +206,8 @@ class AdminController extends Controller
      */
     public function master_worker (Request $request){
         $admin = json_decode(Redis::get('admin_token_'.$request->token), true);
-        $admin_role = Admin_role::where('shop_id', $admin['shop_id'])->where('role_name', '师傅')->first();
-        $info = Admin::where('admin_role_id', $admin_role['id'])
+        $admin_role = Admin_role::where('shop_id', $admin['shop_id'])->select(['id'])->get();
+        $info = Admin::whereIn('admin_role_id', $admin_role)
             ->where('status', 1)
             ->where('admin_status', 1)
             ->select(['id', 'name'])

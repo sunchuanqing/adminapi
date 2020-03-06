@@ -32,6 +32,7 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('today_order', 'OrderController@today_order');// 今日代办
         $route->post('add_car_order', 'OrderController@add_car_order');// 车护开单
         $route->post('update_order_serve', 'OrderController@update_order_serve');// 修改车护订单商品信息
+        $route->post('update_order_goods_money', 'OrderController@update_order_goods_money');// 修改车护订单商品信息
         $route->post('price_list_type', 'OrderController@price_list_type');// 价目表分类
         $route->post('price_list', 'OrderController@price_list');// 查询价目表
         $route->post('set_meal_list', 'OrderController@set_meal_list');// 优惠套餐列表
@@ -41,10 +42,22 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('work_ok', 'OrderController@work_ok');// 施工完成接口
         $route->post('car_order_list', 'OrderController@car_order_list');// 车护订单列表
         $route->post('car_order_info', 'OrderController@car_order_info');// 车护订单详情
+        $route->post('del_order', 'OrderController@del_order');// 车护订单删除
         $route->post('tally_order', 'OrderController@tally_order');// 车护订单入账
         $route->post('car_order_number', 'OrderController@car_order_number');// 可操作车护订单数量
         $route->post('add_serve_order', 'OrderController@add_serve_order');// 购买服务
         $route->post('order_goods_info', 'OrderController@order_goods_info');// 订单商品信息
+
+
+        $route->group(['prefix' => 'car'], function ($route) {
+            $route->post('car_make_list', 'CarOrderController@car_make_list');// 车护已预约订单列表
+            $route->post('car_await', 'CarOrderController@car_await');// 车护稍后开单
+            $route->post('car_await_list', 'CarOrderController@car_await_list');// 车护稍后开单列表
+            $route->post('car_past_list', 'CarOrderController@car_past_list');// 车护已过期列表
+        });
+
+
+
         $route->group(['prefix' => 'luxury'], function ($route) {
             $route->post('book_order_list', 'LuxuryOrderController@book_order_list');// 预约订单列表
             $route->post('inform_logistics', 'LuxuryOrderController@inform_logistics');// 通知物流
@@ -73,6 +86,10 @@ Route::group(['namespace' => 'Api'], function ($route) {
             $route->post('logistics_take', 'LuxuryOrderController@logistics_take');// 物流送货上门从门店取货
             $route->post('user_take', 'LuxuryOrderController@user_take');// 上门自提取件
             $route->post('order_number', 'LuxuryOrderController@order_number');// 订单数量
+            $route->post('update_order_goods', 'LuxuryOrderController@update_order_goods');// 订单物件修改
+            $route->post('del_order_goods', 'LuxuryOrderController@del_order_goods');// 订单物件删除
+            $route->post('del_order', 'LuxuryOrderController@del_order');// 订单删除
+            $route->post('shop_serve_user', 'LuxuryOrderController@shop_serve_user');// 优惠套餐
         });
     });
 
@@ -97,6 +114,8 @@ Route::group(['namespace' => 'Api'], function ($route) {
         $route->post('user_account_info', 'UserController@user_account_info');// 会员流水明细
         $route->post('shop_serve_user', 'UserController@shop_serve_user');// 会员已购的优惠套餐列表
         $route->post('car_consume_record', 'UserController@car_consume_record');// 会员车辆消费记录
+        $route->post('user_card', 'UserController@user_card');// 查询车辆的年卡
+        $route->post('give_gift_card', 'UserController@give_gift_card');// 礼品卡转增
     });
 
     // 员工
